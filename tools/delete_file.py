@@ -50,6 +50,8 @@ def _dir_stats(p: Path) -> tuple[int, int, int]:
         "required": ["path"],
     },
     confirm=True,  # 删除是破坏性操作，配合 CLI --confirm 可人工把关
+    notes=("删除不可恢复：只在用户明确要求删除时调用，删前复述要删的路径；"
+           "非空目录必须传 recursive=true。"),
 )
 def delete_file(ctx: ToolContext, path: str, recursive: bool = False) -> ToolResult:
     p = _norm(ctx.resolve(path))

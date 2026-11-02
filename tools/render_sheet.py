@@ -140,6 +140,8 @@ def _build_html(rows: list[list[str]], title: str, cut: bool) -> str:
         },
         "required": ["path"],
     },
+    notes=("用户要「看表格长什么样/截个屏/检查排版对不对」时用本工具，不要自己写 python 画图；"
+           "只是想把内容读出来用 read_file。"),
 )
 def render_sheet(ctx: ToolContext, path: str, sheet: str = "",
                  max_rows: int = 40) -> ToolResult:

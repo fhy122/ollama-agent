@@ -39,6 +39,10 @@ from agent.registry import ToolContext, ToolResult, tool
         "required": ["path", "content"],
     },
     confirm=True,  # 写盘属于改动操作，配合 CLI --confirm 可人工把关
+    notes=("生成 Excel（.xlsx）时 content 用 JSON 二维数组，首行表头；每行列数必须与表头"
+           "一致，缺值用空字符串占位，绝不为省事少写整列（否则整行错位）。同一分组下有多条"
+           "记录时每条都写全各列（重复分组值或留空串），不要合并成一行；字段按语义归列"
+           "（邮箱进邮箱列、电话进联系人列），不要照原文出现顺序硬搬。"),
 )
 def write_file(ctx: ToolContext, path: str, content: str) -> ToolResult:
     p = ctx.resolve(path)

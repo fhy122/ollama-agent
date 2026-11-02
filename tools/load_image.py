@@ -52,6 +52,8 @@ def sniff_image(raw: bytes) -> str | None:
         },
         "required": ["path"],
     },
+    notes=("只能加载图片（png/jpg/webp/gif/bmp）。用户说\"打开/看一下 Excel、Word、PPT、"
+           "PDF、CSV\"时一律用 read_file 解析文字内容——文档不是图片，硬当图片加载会报错。"),
 )
 def load_image(ctx: ToolContext, path: str) -> ToolResult:
     p = ctx.resolve(path)

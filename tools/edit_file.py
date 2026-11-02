@@ -39,6 +39,8 @@ from tools._common import decode_text, display_path, is_binary_chunk
         "required": ["path", "old_string", "new_string"],
     },
     confirm=True,  # 改盘属于改动操作，配合 --confirm / Web 弹窗人工把关
+    notes=("改代码的闭环：grep_file/glob_file 定位 → read_file 读懂 → edit_file 修改 → "
+           "run_command 跑测试验证。小改动一律优先 edit_file，整文件重写才用 write_file。"),
 )
 def edit_file(ctx: ToolContext, path: str, old_string: str, new_string: str,
               replace_all: bool = False) -> ToolResult:

@@ -57,6 +57,7 @@ class Tool:
     parameters: dict
     handler: Callable[..., "ToolResult | str"]
     confirm: bool = False  # True 且 ctx.confirm 时执行前询问
+    notes: str = ""        # 使用策略：注入 SYSTEM_PROMPT 的工具专属规则（注册即生效）
 
     def spec(self) -> dict:
         """OpenAI/Ollama tools 数组里的一个条目。"""
@@ -87,15 +88,25 @@ class Tool:
 _REGISTRY: dict[str, Tool] = {}
 
 
-def tool(name: str, description: str, parameters: dict, confirm: bool = False):
-    """把函数注册成一个 agent 工具。"""
+def tool(name: str, description: str, parameters: dict,
+         confirm: bool = False, notes: str = ""):
+    """把函数注册成一个 agent 工具。
+
+    notes：跨调用的使用策略（如「只能加载图片」「xlsx 用 JSON 二维数组」），
+    会随 SYSTEM_PROMPT 动态注入——工具在策略就在，删工具不会在提示词里留幽灵规则。
+    """
     def deco(fn: Callable) -> Callable:
         _REGISTRY[name] = Tool(
             name=name, description=description,
-            parameters=parameters, handler=fn, confirm=confirm,
+            parameters=parameters, handler=fn, confirm=confirm, notes=notes,
         )
         return fn
     return deco
+
+
+def all_notes() -> list[str]:
+    """所有注册工具的使用策略（供 SYSTEM_PROMPT 组装）。"""
+    return [f"- {t.name}：{t.notes}" for t in _REGISTRY.values() if t.notes]
 
 
 def all_tools() -> list[Tool]:

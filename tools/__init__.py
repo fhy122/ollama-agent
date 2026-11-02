@@ -13,7 +13,7 @@ import importlib
 import pkgutil
 
 from agent.registry import (  # noqa: F401  对外统一从 tools 入口拿
-    Tool, ToolContext, ToolResult, all_specs, all_tools, dispatch, get,
+    Tool, ToolContext, ToolResult, all_notes, all_specs, all_tools, dispatch, get,
 )
 
 
