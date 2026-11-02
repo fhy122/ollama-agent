@@ -26,7 +26,7 @@ Web UI and confirmation gates on destructive tools. See [README_EN.md](README_EN
 | PyMuPDF | PDF 读取：抽文字层 + 按页渲染成图给视觉模型（同上，不装只影响 .pdf） |
 | [Ollama](https://ollama.com) | 本地服务运行在 `http://localhost:11434` |
 | 带 tools 能力的模型 | 如 `qwen3.5:9b`（capabilities 需含 `tools`） |
-| Playwright（可选） | 仅 `browse_url` / `web_search` 兜底需要 |
+| Playwright（可选） | 仅 `browse_url` / `web_screenshot` / `web_search` 兜底需要 |
 
 ```bash
 # 基础依赖（Office 读写）
@@ -325,6 +325,7 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 | `render_sheet` | **表格渲染成图片**（xlsx/xlsm/csv/tsv → PNG 截图） | 「看看表格做得对不对/长什么样」用它，比 read_file 更直观 |
 | `clipboard_image` | **读剪贴板**：截图→图；Ctrl+C 文件→路径 | Alt+V / /paste 同源，见下 |
 | `browse_url` | Playwright 打开网页提取正文 | 读文章/文档/链接 |
+| `web_screenshot` | **网页/HTML 截成图片**（首屏或整页长图 → base64 喂视觉模型） | 「截个图看看这页面渲染对不对/版式有没有错」用它；只看文字用 browse_url |
 | `web_search` | 联网搜索：**双引擎并行**（Bing 结果 + 百度AI摘要/结果） | 摘要够用可免 browse |
 | `skill` | **按需加载技能指令**（SKILL.md 工作流文档） | 见下方技能说明 |
 
@@ -513,6 +514,7 @@ ollama-agent/
 │   ├── load_image.py      #   图片 base64 喂给视觉模型
 │   ├── clipboard_image.py #   剪贴板截图 → 缓存 → 喂给视觉模型
 │   ├── browse_url.py      #   Playwright 读网页
+│   ├── web_screenshot.py  #   Playwright 截网页/HTML → PNG 喂视觉模型
 │   ├── web_search.py      #   联网搜索（双引擎并行：Bing + 百度AI总结/结果）
 │   └── skill.py           #   技能按需加载（SKILL.md 索引入系统提示词，正文按需读）
 ├── webui/                 # Web UI 层（python -m webui）

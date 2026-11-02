@@ -68,7 +68,8 @@ def main() -> None:
     names = {s["function"]["name"] for s in specs}
     expected = {"read_file", "write_file", "edit_file", "list_dir", "load_image",
                 "browse_url", "web_search", "clipboard_image", "skill",
-                "delete_file", "run_command", "grep_file", "glob_file", "render_sheet"}
+                "delete_file", "run_command", "grep_file", "glob_file", "render_sheet",
+                "web_screenshot"}
     # web_chat 是可选私有模块（公开仓库不含），在就要求注册
     if importlib.util.find_spec("tools.web_chat") is not None:
         expected.add("web_chat")
@@ -309,6 +310,28 @@ def main() -> None:
         r = dispatch("render_sheet", {"path": "missing.xlsx"}, ctx)
         assert "不存在" in r.text, r.text
         print("PASS: render_sheet（xlsx→PNG、错表名/非表格/文件不存在）")
+
+        # ---- web_screenshot：网页/HTML 截成图片（「截个图看看长什么样」）----
+        # 用 html 参数走本地渲染，不联网，保证离线自测
+        r = dispatch("web_screenshot", {
+            "html": "<h1 style='color:#1f4e79'>截图测试</h1><p>版式检查</p>",
+            "width": 800, "height": 600}, ctx)
+        assert r.images and len(r.images) == 1, r.text
+        assert r.images[0].startswith("iVBORw0K"), "截图结果应是 PNG"
+        assert "已截图" in r.text and "800x600" in r.text, r.text
+        # 全页长图分支也要走通
+        r = dispatch("web_screenshot", {
+            "html": "<body style='margin:0'><div style='height:1600px'>长页</div></body>",
+            "full_page": True}, ctx)
+        assert r.images and len(r.images) == 1, r.text
+        # 参数校验：都给 / 都不给 / 非 http 协议
+        r = dispatch("web_screenshot", {"url": "https://example.com", "html": "<p>x</p>"}, ctx)
+        assert "错误" in r.text and "二选一" in r.text, r.text
+        r = dispatch("web_screenshot", {}, ctx)
+        assert "错误" in r.text and "至少" in r.text, r.text
+        r = dispatch("web_screenshot", {"url": "ftp://example.com"}, ctx)
+        assert "错误" in r.text and "http" in r.text, r.text
+        print("PASS: web_screenshot（HTML→PNG、全页长图、二选一/空参/协议校验）")
 
         # ---- delete_file：删文件 / 空目录 / 非空目录保护 / recursive ----
         del_f = ws / "todel.txt"
