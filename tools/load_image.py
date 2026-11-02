@@ -1,8 +1,9 @@
-"""load_image — 加载本地图片给模型看（视觉模型）。"""
+"""load_image — 加载本地图片给模型看（视觉模型）；PDF 可按页渲染成图片。"""
 from __future__ import annotations
 
 import base64
 
+from agent import docparse
 from agent.registry import ToolContext, ToolResult, tool
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -14,7 +15,7 @@ _DOC_SUFFIXES = {
     ".xlsx": "Excel 表格", ".xlsm": "Excel 表格", ".xls": "旧版 Excel（建议另存为 .xlsx）",
     ".docx": "Word 文档", ".doc": "旧版 Word（建议另存为 .docx）",
     ".pptx": "PPT", ".ppt": "旧版 PPT（建议另存为 .pptx）",
-    ".pdf": "PDF", ".csv": "CSV 表格", ".tsv": "TSV 表格",
+    ".csv": "CSV 表格", ".tsv": "TSV 表格",
     ".txt": "文本", ".md": "Markdown", ".json": "JSON", ".py": "代码",
 }
 
@@ -40,25 +41,49 @@ def sniff_image(raw: bytes) -> str | None:
 @tool(
     name="load_image",
     description=(
-        "加载本地**图片**文件（png/jpg/webp/gif/bmp），返回后图片附在结果消息中，视觉模型可直接看到。"
+        "加载本地**图片**文件（png/jpg/webp/gif/bmp）给视觉模型看；"
+        "也支持把 **PDF 的某一页渲染成图片**（用 page 指定页码）。图片会附在结果消息里。"
         "相对路径基于工作空间。"
-        "**只能加载图片**：xlsx/docx/pptx/pdf/csv 等文档不要用它，请改用 read_file 解析文本内容。"
+        "PDF 读法：先试 read_file（有文字层时更省 token、能搜关键词）；"
+        "抽不出字（扫描件/纯图页）或要看版式/图表时，才用本工具 + page 渲染成图。"
+        "xlsx/docx/pptx/csv 等文档不要用它，改用 read_file 解析文本内容。"
     ),
     parameters={
         "type": "object",
         "properties": {
             "path": {"type": "string",
-                     "description": "图片文件路径（.png/.jpg/.jpeg/.webp/.gif/.bmp）"},
+                     "description": "图片文件路径（.png/.jpg/.jpeg/.webp/.gif/.bmp），或 .pdf"},
+            "page": {"type": "integer",
+                     "description": "仅 PDF：渲染第几页，从 1 开始，默认 1"},
         },
         "required": ["path"],
     },
 )
-def load_image(ctx: ToolContext, path: str) -> ToolResult:
+def load_image(ctx: ToolContext, path: str, page: int = 1) -> ToolResult:
     p = ctx.resolve(path)
     if not p.exists():
-        return ToolResult(f"[错误] 图片不存在: {p}（相对路径基于工作空间 {ctx.workspace}）")
+        return ToolResult(f"[错误] 文件不存在: {p}（相对路径基于工作空间 {ctx.workspace}）")
 
     suffix = p.suffix.lower()
+
+    # ---- PDF：渲染指定页成 PNG 交给视觉模型（扫描件/图表/版式）----
+    if suffix in docparse.PDF_SUFFIXES:
+        try:
+            png, no, total = docparse.pdf_render_page(p, page=page)
+        except ValueError as e:
+            return ToolResult(f"[错误] {e}")
+        except Exception as e:
+            return ToolResult(f"[错误] PDF 渲染失败: {type(e).__name__}: {e}")
+        if not png:
+            return ToolResult(f"[错误] PDF 第 {no} 页渲染结果为空: {p}")
+        b64 = base64.b64encode(png).decode("ascii")
+        return ToolResult(
+            f"[PDF 第 {no}/{total} 页已渲染成图片] {p}（png，{len(png)} 字节）。"
+            f"图片内容已附在本条消息中。"
+            f"若这页本来有文字层，read_file(path=\"{path}\", pages=\"{no}\") 更省 token。",
+            images=[b64],
+        )
+
     if suffix not in IMAGE_SUFFIXES:
         kind = _DOC_SUFFIXES.get(suffix)
         if kind:
@@ -68,7 +93,7 @@ def load_image(ctx: ToolContext, path: str) -> ToolResult:
                 f"若确实想看表格/文档的渲染样式，先渲染成图片再 load_image。")
         return ToolResult(
             f"[错误] {p.name} 不是支持的图片格式（{'无扩展名' if not suffix else suffix}）。"
-            f"仅支持 png/jpg/jpeg/webp/gif/bmp。文本类请用 read_file。")
+            f"仅支持 png/jpg/jpeg/webp/gif/bmp，以及可渲染的 pdf。文本类请用 read_file。")
 
     raw = p.read_bytes()
     if len(raw) > MAX_IMAGE_BYTES:

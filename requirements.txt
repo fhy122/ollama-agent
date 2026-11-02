@@ -2,6 +2,10 @@
 openpyxl>=3.1
 python-docx>=1.1
 
+# PDF 读取（read_file 抽文字层 + load_image 按页渲染给视觉模型）
+# 不装只影响 .pdf，其它格式照常；许可证 AGPL-3.0，对外分发前请确认
+pymupdf>=1.24
+
 # 可选——仅 browse_url / web_search(兜底路线) / web_chat 需要：
 playwright>=1.40
 # 安装后执行：playwright install chromium

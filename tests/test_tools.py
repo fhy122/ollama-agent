@@ -33,6 +33,36 @@ def _make_xlsx(path: Path) -> None:
     wb.save(path)
 
 
+def _pymupdf():
+    """PDF 用例需要 pymupdf；没装就跳过（不影响其它格式回归）。"""
+    try:
+        import pymupdf
+        return pymupdf
+    except ImportError:
+        return None
+
+
+def _make_pdf(path: Path, pages: list[str]) -> None:
+    """造带文字层的 PDF（每页一行中文）。"""
+    pymupdf = _pymupdf()
+    doc = pymupdf.open()
+    for txt in pages:
+        pg = doc.new_page()
+        pg.insert_text((72, 100), txt, fontname="china-s", fontsize=16)
+    doc.save(path)
+    doc.close()
+
+
+def _make_scanned_pdf(path: Path, src: Path) -> None:
+    """把 src 首页渲染成图片再贴进新 PDF —— 只有图、没有文字层，模拟扫描件。"""
+    pymupdf = _pymupdf()
+    pix = pymupdf.open(str(src))[0].get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5))
+    doc = pymupdf.open()
+    doc.new_page().insert_image(pymupdf.Rect(50, 50, 545, 792), pixmap=pix)
+    doc.save(path)
+    doc.close()
+
+
 def main() -> None:
     specs = all_specs()
     names = {s["function"]["name"] for s in specs}
@@ -93,6 +123,43 @@ def main() -> None:
         old.write_bytes(b"\xd0\xcf\x11\xe0 fake ole")
         r = dispatch("read_file", {"path": "old.xls"}, ctx)
         assert "另存为" in r.text or "错误" in r.text, r.text
+
+        # ---- PDF：文字层抽取 / 页码选择 / 扫描件引导 / 渲染成图 ----
+        if _pymupdf() is None:
+            print("跳过 PDF 用例：未安装 pymupdf")
+        else:
+            _make_pdf(ws / "合同.pdf", ["第一页 合同金额", "第二页 付款方式", "第三页 违约责任"])
+            r = dispatch("read_file", {"path": "合同.pdf"}, ctx)
+            assert "PDF" in r.text and "共 3 页" in r.text, r.text
+            assert "第一页" in r.text and "第三页" in r.text, r.text
+            # 短文本 PDF 不能被误判成扫描件（按总字数判会误伤，必须是"本次显示页全空"才报）
+            assert "扫描件" not in r.text, f"短文本 PDF 被误判为扫描件: {r.text}"
+
+            # 页码选择：只要第 2 页
+            r = dispatch("read_file", {"path": "合同.pdf", "pages": "2"}, ctx)
+            assert "第二页" in r.text and "第一页" not in r.text, r.text
+            r = dispatch("read_file", {"path": "合同.pdf", "pages": "1-2,3"}, ctx)
+            assert "第一页" in r.text and "第三页" in r.text, r.text
+
+            # 越界页码给出可懂的错，而不是空结果
+            r = dispatch("read_file", {"path": "合同.pdf", "pages": "9"}, ctx)
+            assert "超出范围" in r.text, r.text
+
+            # 扫描件：抽不到字 → 明确引导去 load_image 渲染
+            _make_scanned_pdf(ws / "扫描件.pdf", ws / "合同.pdf")
+            r = dispatch("read_file", {"path": "扫描件.pdf"}, ctx)
+            assert "抽不到文字" in r.text and "load_image" in r.text, r.text
+
+            # load_image 能把 PDF 页渲染成 PNG 交给视觉模型
+            r = dispatch("load_image", {"path": "扫描件.pdf", "page": 1}, ctx)
+            assert "已渲染成图片" in r.text and "第 1/1 页" in r.text, r.text
+            assert r.images and len(r.images) == 1, "PDF 渲染结果必须带图"
+            import base64
+            assert base64.b64decode(r.images[0]).startswith(b"\x89PNG\r\n\x1a\n"), "渲染结果应是 PNG"
+
+            # 不许生成伪 PDF
+            r = dispatch("write_file", {"path": "假.pdf", "content": "hi"}, ctx)
+            assert "不支持直接生成" in r.text and not (ws / "假.pdf").exists(), r.text
 
         # ---- 写 xlsx：CSV → 真 Excel（zip 容器 + 回读还原）----
         csv_content = (

@@ -1,7 +1,7 @@
 # Ollama Agent — 本地小模型工具调用代理
 
 一个为**本地 Ollama 小模型**（如 `qwen3.5:9b`）设计的极简 Agent：
-工具调用（function calling）+ **默认关闭思考（think=false）** + 文件读写 + 图片理解 + 联网搜索/读网页。
+工具调用（function calling）+ **默认关闭思考（think=false）** + 文件读写 + 图片理解 + PDF 阅读 + 联网搜索/读网页。
 
 > 为什么自己做：市面上的 Agent 框架对本地小模型不友好——要么太慢、要么吃 context。
 > 这个项目核心诉求就两条：**能选 think=false**（省时间省 token），**context 可控**（默认 32768）。
@@ -12,6 +12,7 @@
 |---|---|
 | Python 3.10+ | Ollama 通信走标准库 urllib |
 | openpyxl / python-docx | Excel / Word 读写（`pip install -r requirements.txt`） |
+| PyMuPDF | PDF 读取：抽文字层 + 按页渲染成图给视觉模型（同上，不装只影响 .pdf） |
 | [Ollama](https://ollama.com) | 本地服务运行在 `http://localhost:11434` |
 | 带 tools 能力的模型 | 如 `qwen3.5:9b`（capabilities 需含 `tools`） |
 | Playwright（可选） | 仅 `browse_url` / `web_search` 兜底需要 |
@@ -301,7 +302,7 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 
 | 工具 | 功能 | 备注 |
 |---|---|---|
-| `read_file` | 读本地文件：**文本 / Word / Excel / PPT** | 见下方格式支持 |
+| `read_file` | 读本地文件：**文本 / Word / Excel / PPT / PDF** | 见下方格式支持 |
 | `write_file` | 写本地文件：**文本 / Word / Excel**（按扩展名生成真格式） | 见下方格式支持；`--confirm` 可把关 |
 | `edit_file` | **精确替换文件片段**（old_string→new_string，外科手术式） | 默认要求唯一；`--confirm` 可把关 |
 | `delete_file` | 删除文件/目录（破坏性，不可恢复） | 工作空间外拒绝 |
@@ -309,7 +310,7 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 | `run_command` | **执行 shell 命令**：测试/git/装依赖/lint/编译 | git 直接用命令即可；`--confirm` 可把关 |
 | `grep_file` | **搜文件内容**（正则，`文件:行号: 命中行`） | 跳过 .git/node_modules 等噪声目录 |
 | `glob_file` | **按文件名模式找文件**（`*.py`、`src/**/*.ts`） | 不含 / 的模式任意子目录递归匹配 |
-| `load_image` | 加载图片文件 → base64 喂给视觉模型（**仅图片**，文档会被拒） | 需模型支持 vision |
+| `load_image` | 加载图片 → base64 喂给视觉模型；**PDF 可按页渲染成图片** | 文档类会被拒并引导 read_file |
 | `render_sheet` | **表格渲染成图片**（xlsx/xlsm/csv/tsv → PNG 截图） | 「看看表格做得对不对/长什么样」用它，比 read_file 更直观 |
 | `clipboard_image` | **读剪贴板**：截图→图；Ctrl+C 文件→路径 | Alt+V / /paste 同源，见下 |
 | `browse_url` | Playwright 打开网页提取正文 | 读文章/文档/链接 |
@@ -398,10 +399,24 @@ skill(name="ui-design-system")   # 加载该技能指令全文
 | Word | `.docx` | 按段落抽文本 | Markdown 子集（`#` 标题、`-`/`1.` 列表、`\| 表格 \|`、`**加粗**`、`` `代码` ``）→ 真 docx |
 | Excel | `.xlsx` `.xlsm` | 按工作表输出单元格（表名 + 行列，共享字符串已还原） | **JSON 二维数组（推荐）** `[["列1","列2"],["值1","值2"]]` / CSV / TSV / Markdown 表格 → 真 xlsx；每行列数必须与表头一致，参差行报错回传（不静默错位）；`=== 表名 ===` 分节写多工作表 |
 | PPT | `.pptx` | 按页抽文字 | ❌ 暂不支持生成（工具会提示） |
+| PDF | `.pdf` | **按页返回文字**（`pages="1-5"` 指定页码；默认前 20 页、4 万字封顶） | ❌ 不生成（避免伪文件；用 Word/WPS 导出） |
 | 旧版 | `.doc` `.xls` `.ppt` | ❌ 请另存为新格式（工具会提示） | ❌ 拒绝写入（避免产出伪文件） |
 
 > 生成用 openpyxl（Excel）/ python-docx（Word）；解析同源库 + pptx 走 zip 抽字。Office/WPS 可直接打开产出的 docx/xlsx。
 > Excel 数字自动识别为数值单元格；带前导零（如 `007`、区号）的长数字保持文本，电话/编号不会被 Excel 吃成科学计数。
+
+### PDF 怎么读（两条路）
+
+PDF 分两种，工具会自动判断该走哪条：
+
+| PDF 类型 | 走法 | 表现 |
+|---|---|---|
+| 有文字层（Word 导出、网页打印） | `read_file` | 按页返回文字，省 token、能搜关键词；大文件用 `pages="1-5"` 分段 |
+| 扫描件 / 纯图页（拍照、扫描、盖章） | `load_image(path=…, page=N)` | 把该页渲染成 PNG（默认 120dpi）交给视觉模型「看」 |
+
+抽不到字时返回值里会直接写明「本次显示的页全部抽不到文字，基本可断定是扫描件」并给出下一步该调什么，
+所以模型不会卡在「我读不了 PDF」上。加密 PDF 会明确回「需要密码（暂不支持）」。
+`.pdf` 依赖 PyMuPDF（许可证 **AGPL-3.0**，自用无碍，对外分发前请确认）。
 
 ### web_search 说明
 
@@ -470,7 +485,7 @@ playwritetest/
 │   ├── client.py          #   Ollama /api/chat 客户端（think 参数、tool_calls、预热）
 │   ├── registry.py        #   工具注册表（@tool 装饰器 + dispatch + 工作空间路径解析）
 │   ├── events.py          #   事件发射器抽象（控制台/HTTP 流共用主循环）
-│   ├── docparse.py        #   文档解析（docx/xlsx/pptx → 文本，openpyxl/python-docx + zip 抽字）
+│   ├── docparse.py        #   文档解析（docx/xlsx/pptx/pdf → 文本；pdf 还能渲染某页为 PNG）
 │   ├── docgen.py          #   文档生成（CSV/Markdown → 真 xlsx/docx，openpyxl/python-docx）
 │   ├── clipboard.py       #   剪贴板取图/取文件（ctypes Win32 + 标准库 PNG 编码）
 │   ├── hotkeys.py         #   全局热键 Alt+V（RegisterHotKey + 消息循环线程）
@@ -519,7 +534,7 @@ playwritetest/
 ## 测试
 
 ```bash
-python tests/test_tools.py            # 离线回归：工具注册 + 读写列图 + skill + @ 引用 + 面板状态机
+python tests/test_tools.py            # 离线回归：工具注册 + 读写列图 + PDF 抽取/页码/渲染 + skill + @ 引用 + 面板状态机
 python tests/test_webui.py            # Web UI 冒烟：路由/NDJSON 流协议/上传/配置热更新
 python tests/test_sessions.py         # 会话持久化：存档/恢复/切换/删除/全文搜索/HTTP 接口
 python tests/test_ui_sidebar.py       # 侧栏收起展开（Playwright，需装 playwright）
@@ -536,6 +551,8 @@ python tests/test_cli_palette_console.py   # 行内面板真控制台验证（Wi
 - Bing 的 AI 摘要绑登录态，headless 抓不到，只保留常规结果
 - 图片理解需要模型支持 vision（`qwen3.5:9b` 支持）
 - Office 读写只支持 OOXML 新格式（docx/xlsx/pptx）；`.doc/.xls/.ppt` 旧二进制格式请另存为新格式；`.pptx` 只读不写
-- Excel 大表最多抽 500 行（防止撑爆 context）；`.xlsb`、PDF 暂不支持
+- Excel 大表最多抽 500 行（防止撑爆 context）；`.xlsb` 暂不支持
+- PDF 文字层抽取走 PyMuPDF；扫描件靠 `load_image` 逐页渲染给视觉模型看，**没有内建 OCR**，图里的字认不全就是模型视觉的锅；加密 PDF 不支持
+- WebUI 里点 PDF 文件预览会落到「二进制，请下载」——预览面板不解析 PDF，模型读 PDF 走 `read_file`/`load_image` 工具，两者互不影响
 - 剪贴板/热键仅支持 Windows（ctypes Win32）：取图认位图/PNG 格式，取文件认 Ctrl+C 的 CF_HDROP；复制图片**文件**用 Alt+V 走文件路径也行（模型会 load_image）
 - Alt+V 是全局热键，若被其它软件抢先占用，启动时会提示（用 /paste 替代，或 --no-hotkey 关闭）

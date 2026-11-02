@@ -1,4 +1,4 @@
-"""read_file — 读取本地文件（文本 / Word / Excel / PPT）。"""
+"""read_file — 读取本地文件（文本 / Word / Excel / PPT / PDF）。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,7 +11,9 @@ from agent.registry import ToolContext, ToolResult, tool
     name="read_file",
     description=(
         "读取本地文件内容。支持：文本（txt/md/csv/json/代码等，按行号返回）、"
-        "Word(.docx)、Excel(.xlsx/.xlsm，按工作表返回单元格)、PPT(.pptx，按页返回)。"
+        "Word(.docx)、Excel(.xlsx/.xlsm，按工作表返回单元格)、PPT(.pptx，按页返回)、"
+        "PDF(.pdf，按页返回文字，用 pages 指定页码)。"
+        "PDF 抽不出文字时说明是扫描件，改用 load_image(path=…, page=N) 渲染成图看。"
         "相对路径在工作空间内查找；用户给了绝对路径就直接用。"
     ),
     parameters={
@@ -21,18 +23,33 @@ from agent.registry import ToolContext, ToolResult, tool
                 "type": "string",
                 "description": "文件路径。相对路径基于工作空间，绝对路径按原样",
             },
+            "pages": {
+                "type": "string",
+                "description": "仅 PDF 生效：页码，如 \"3\"、\"1-5\"、\"2,4,7\"；不填则从第 1 页起读",
+            },
             "offset": {"type": "integer", "description": "起始行号（文本模式），从 0 开始，默认 0"},
             "limit": {"type": "integer", "description": "最多返回多少行，默认 200"},
         },
         "required": ["path"],
     },
 )
-def read_file(ctx: ToolContext, path: str, offset: int = 0, limit: int = 200) -> ToolResult:
+def read_file(ctx: ToolContext, path: str, pages: str | None = None,
+              offset: int = 0, limit: int = 200) -> ToolResult:
     p = ctx.resolve(path)
     if not p.exists():
         return ToolResult(f"[错误] 文件不存在: {p}（相对路径基于工作空间 {ctx.workspace}）")
     if p.is_dir():
         return ToolResult(f"[错误] 是目录不是文件: {p}（用 list_dir）")
+
+    # ---- PDF（自带页码窗口，不走行号分页）----
+    if p.suffix.lower() in docparse.PDF_SUFFIXES:
+        try:
+            _label, text = docparse.extract_text(p, pages=pages)
+        except ValueError as e:
+            return ToolResult(f"[错误] {e}")
+        except Exception as e:
+            return ToolResult(f"[错误] PDF 解析失败: {type(e).__name__}: {e}")
+        return ToolResult(text)
 
     # ---- Office 文档 ----
     if p.suffix.lower() in (docparse.DOC_SUFFIXES | docparse.SHEET_SUFFIXES
@@ -52,7 +69,7 @@ def read_file(ctx: ToolContext, path: str, offset: int = 0, limit: int = 200) ->
     except UnicodeDecodeError:
         return ToolResult(
             f"[错误] 二进制文件无法按文本读取: {p.suffix or '(无扩展名)'}。"
-            f"图片用 load_image；docx/xlsx/pptx 用 read_file（已支持）；其它格式暂不支持"
+            f"图片用 load_image；docx/xlsx/pptx/pdf 用 read_file（已支持）；其它格式暂不支持"
         )
     lines = text.splitlines()
     return ToolResult(_with_head_and_window(p, "文本", lines, offset, limit))

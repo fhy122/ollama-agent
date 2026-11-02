@@ -56,6 +56,13 @@ def write_file(ctx: ToolContext, path: str, content: str) -> ToolResult:
             f"请改用 {'xlsx' if suf == '.xls' else 'docx' if suf == '.doc' else 'pptx'} 扩展名"
         )
 
+    # ---- PDF：不支持直接生成 ----
+    if suf in docparse.PDF_SUFFIXES:
+        return ToolResult(
+            "[错误] 不支持直接生成 .pdf（会产出打不开的伪文件）。"
+            "内容先存 .md / .docx，需要 PDF 时用 Word/WPS 或浏览器「打印为 PDF」导出"
+        )
+
     # ---- Excel ----
     if suf in docparse.SHEET_SUFFIXES:
         try:
