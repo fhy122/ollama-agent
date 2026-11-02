@@ -316,7 +316,10 @@ def make_handler(app: "WebUIApp"):
             send_text = message or "看一下我附带的内容"
             if files:
                 listing = "\n".join(f"- {p}" for p in files)
-                send_text += (f"\n\n[我附带的剪贴板文件，请按需用 read_file/load_image 读取]\n"
+                # 别叫它「剪贴板文件」：模型会顺着这个词去调 clipboard_image，
+                # 结果把一张截图当成 PDF 读。明确说是已上传到工作空间的文件。
+                send_text += (f"\n\n[我附带了这些文件（已上传到工作空间，不是剪贴板截图），"
+                              f"直接用 read_file 读；PDF 抽不出文字再用 load_image 按页渲染]\n"
                               f"{listing}")
             try:
                 final = app.session.run(send_text, images or None, emitter,

@@ -505,6 +505,19 @@ def main() -> None:
             assert (ws / ".clip_cache").exists(), "缓存目录应存在"
             assert (ws / "shots" / "clip.png").exists(), "save_as 未生效"
 
+            # save_as 只许图片后缀：曾让模型把 PNG 字节写进 .pdf，
+            # 之后 read_file 按 PDF 解析失败、load_image 读出一张「纯红色空白页」
+            r = dispatch("clipboard_image", {"save_as": "假文档.pdf"}, ctx)
+            assert "错误" in r.text and ".pdf" in r.text, r.text
+            assert not (ws / "假文档.pdf").exists(), "非图片后缀不应落盘"
+
+            # 已有同名文件时改名，绝不覆盖（曾把用户 PDF 覆盖成 70 字节截图）
+            keep = ws / "shots" / "keep.png"
+            keep.write_bytes(b"ORIGINAL-DATA")
+            r = dispatch("clipboard_image", {"save_as": "shots/keep.png"}, ctx)
+            assert keep.read_bytes() == b"ORIGINAL-DATA", "原文件被覆盖了！"
+            assert (ws / "shots" / "keep_1.png").exists(), "应改存为 keep_1.png"
+
         print("PASS: 剪贴板 DIB→PNG 往返 + clipboard_image 缓存/save_as")
 
         # ---- 剪贴板文件（Ctrl+C / CF_HDROP）----
@@ -791,6 +804,28 @@ def main() -> None:
         raise
     except Exception as e:
         print(f"SKIP: 行内面板测试（{type(e).__name__}: {e}）")
+
+    # ---- 附件路径指路：模型猜错目录时，错误信息要直接给正确路径 ----
+    # 实战：WebUI 附件在 .uploads/，模型猜成 .clip_cache/xxx.pdf，
+    # 秒失败后开始乱试 clipboard_image / load_image，把截图当 PDF 读
+    with tempfile.TemporaryDirectory() as td3:
+        ws3 = Path(td3) / "ws"
+        ws3.mkdir()
+        ctx3 = ToolContext(workspace=ws3)
+        up = ws3 / ".uploads"
+        up.mkdir()
+        real = up / "研习室.pdf"
+        real.write_text("x", encoding="utf-8")
+
+        r = dispatch("read_file", {"path": ".clip_cache/研习室.pdf"}, ctx3)
+        assert "文件不存在" in r.text and "同名文件其实在" in r.text, r.text
+        assert str(real) in r.text, "应给出附件的真实绝对路径"
+
+        r = dispatch("read_file", {"path": "压根没有这个文件.pdf"}, ctx3)
+        assert "附带的文件在" in r.text and ".uploads" in r.text, r.text
+        assert "研习室.pdf" in r.text, "应列出 .uploads 里的真实附件"
+
+        print("PASS: read_file 附件路径指路（同名直给真实路径 / 无同名列最近附件）")
 
     print(f"PASS: 注册 {len(specs)} 个工具 {sorted(names)}")
     print("PASS: 工作空间相对/绝对路径、list_dir 默认、docx/xlsx 解析、旧格式/二进制提示")

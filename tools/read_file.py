@@ -6,6 +6,38 @@ from pathlib import Path
 from agent import docparse
 from agent.registry import ToolContext, ToolResult, tool
 
+# WebUI 拖入/上传的附件目录（webui/server.py handle_upload 写这里）
+UPLOAD_DIRNAME = ".uploads"
+
+
+def _missing_hint(p: Path, ws: Path) -> str:
+    """文件不存在时给「下一步该干嘛」，而不是只报一个路径。
+
+    实战教训：WebUI 拖入的附件落在 {workspace}/.uploads/，模型拿相对路径去猜，
+    猜成 .clip_cache/xxx.pdf 之后 read_file 秒失败，它就开始乱试 clipboard_image /
+    load_image，把一张截图当成 PDF 读。错误信息必须直接指出附件真实位置。
+    """
+    up = ws / UPLOAD_DIRNAME
+    if up.is_dir():
+        try:
+            files = [f for f in up.iterdir() if f.is_file()]
+        except OSError:
+            files = []
+        # 1) 有同名文件（忽略大小写）→ 直接给出正确路径
+        for f in files:
+            if f.name.lower() == p.name.lower():
+                return f"。同名文件其实在 {f}，直接用这个路径重试"
+        # 2) 否则列出最近附带的几个文件
+        if files:
+            try:
+                recent = sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)[:5]
+            except OSError:
+                recent = files[:5]
+            listing = "\n".join(f"  - {f}" for f in recent)
+            return (f"。用户本条消息附带的文件在 {up}，最近几个是：\n{listing}\n"
+                    f"从中选一个重试；要看全部用 list_dir")
+    return f"（相对路径基于工作空间 {ws}，用 list_dir 查看真实文件名）"
+
 
 @tool(
     name="read_file",
@@ -14,6 +46,7 @@ from agent.registry import ToolContext, ToolResult, tool
         "Word(.docx)、Excel(.xlsx/.xlsm，按工作表返回单元格)、PPT(.pptx，按页返回)、"
         "PDF(.pdf，按页返回文字，用 pages 指定页码)。"
         "PDF 抽不出文字时说明是扫描件，改用 load_image(path=…, page=N) 渲染成图看。"
+        "用户本条消息拖入/上传的文件都在工作空间 .uploads/ 目录下，按那个路径读。"
         "相对路径在工作空间内查找；用户给了绝对路径就直接用。"
     ),
     parameters={
@@ -37,7 +70,7 @@ def read_file(ctx: ToolContext, path: str, pages: str | None = None,
               offset: int = 0, limit: int = 200) -> ToolResult:
     p = ctx.resolve(path)
     if not p.exists():
-        return ToolResult(f"[错误] 文件不存在: {p}（相对路径基于工作空间 {ctx.workspace}）")
+        return ToolResult(f"[错误] 文件不存在: {p}{_missing_hint(p, ctx.workspace)}")
     if p.is_dir():
         return ToolResult(f"[错误] 是目录不是文件: {p}（用 list_dir）")
 
