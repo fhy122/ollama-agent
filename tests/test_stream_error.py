@@ -22,7 +22,7 @@ from agent.config import AgentConfig  # noqa: E402
 from agent.loop import run_turn  # noqa: E402
 from agent.registry import ToolContext  # noqa: E402
 
-REAL_OPEN = C.urllib.request.urlopen
+REAL_CONN = C.http.client.HTTPConnection
 
 
 def _line(obj: dict) -> bytes:
@@ -40,6 +40,8 @@ def _done() -> bytes:
 
 class _Stream:
     """假响应：按顺序吐字节行，可在中途抛异常（模拟读超时 / 连接重置）。"""
+
+    status = 200          # _post_chat 会检查状态码
 
     def __init__(self, lines, boom: Exception | None = None, at: int = 10 ** 9):
         self.lines, self.boom, self.at = lines, boom, at
@@ -65,13 +67,34 @@ def _client() -> C.OllamaClient:
     cli.think = False
     cli.num_ctx = None
     cli.temperature = 0.7
+    cli._current_conn = None
+    cli._current_resp = None
+    cli._abort_requested = False
     return cli
 
 
 def _patched(stream: _Stream):
-    def fake_urlopen(req, timeout=None):
-        return stream
-    C.urllib.request.urlopen = fake_urlopen
+    """把 http.client.HTTPConnection 换成直接返回 stream 的替身。
+
+    _post_chat 改用 http.client 之后（为了能 abort），这里也得打在连接上，
+    打 urlopen 已经没用了。
+    """
+
+    class _Conn:
+        def __init__(self, *args, **kwargs):
+            self.sock = None
+            self.closed = False
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return stream
+
+        def close(self):
+            self.closed = True
+
+    C.http.client.HTTPConnection = _Conn
     return stream
 
 
@@ -81,7 +104,7 @@ def test_no_done_frame() -> None:
     try:
         r = _client().chat([{"role": "user", "content": "x"}])
     finally:
-        C.urllib.request.urlopen = REAL_OPEN
+        C.http.client.HTTPConnection = REAL_CONN
     assert r["content"] == "前半段后半段", r
     assert r["error"], "缺 done 帧必须标记为断流"
     assert "done" in r["error"], r["error"]
@@ -96,7 +119,7 @@ def test_timeout_midstream() -> None:
     try:
         r = _client().chat([{"role": "user", "content": "x"}])
     finally:
-        C.urllib.request.urlopen = REAL_OPEN
+        C.http.client.HTTPConnection = REAL_CONN
     assert r["content"] == "已经说了一半", r
     assert "TimeoutError" in (r["error"] or ""), r["error"]
     assert stream.closed is True
@@ -113,7 +136,7 @@ def test_tool_calls_dropped() -> None:
     try:
         r = _client().chat([{"role": "user", "content": "x"}])
     finally:
-        C.urllib.request.urlopen = REAL_OPEN
+        C.http.client.HTTPConnection = REAL_CONN
     assert r["content"] == "我来写文件", r
     assert r["tool_calls"] == [], f"半截工具调用必须丢弃，实际 {r['tool_calls']}"
     assert "ConnectionResetError" in (r["error"] or ""), r["error"]
@@ -179,10 +202,20 @@ def test_run_turn_keeps_partial() -> None:
 def test_post_chat_first_byte_timeout() -> None:
     """首字节前超时：给一句能照着做的提示，而不是裸 TimeoutError。"""
 
-    def fake_urlopen(req, timeout=None):
-        raise TimeoutError("timed out")
+    class _Conn:
+        def __init__(self, *args, **kwargs):
+            self.sock = None
 
-    C.urllib.request.urlopen = fake_urlopen
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            raise TimeoutError("timed out")
+
+        def close(self):
+            pass
+
+    C.http.client.HTTPConnection = _Conn
     try:
         try:
             _client().chat([{"role": "user", "content": "x"}])
@@ -191,7 +224,7 @@ def test_post_chat_first_byte_timeout() -> None:
             msg = str(e)
             assert "timeout" in msg and "秒" in msg, msg
     finally:
-        C.urllib.request.urlopen = REAL_OPEN
+        C.http.client.HTTPConnection = REAL_CONN
     print("PASS: 首字节超时 → 可读提示（含调参建议）")
 
 

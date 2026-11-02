@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from agent.console import color
@@ -65,54 +67,111 @@ class OllamaClient:
         self.think = config.think_value  # False/True/"low".../None(不传)
         self.num_ctx = config.num_ctx
         self.temperature = config.temperature
+        # 当前连接/响应句柄，供 abort() 强制断开（见 abort 的注释）
+        self._current_conn = None
+        self._current_resp = None
+        self._abort_requested = False
+
+    # ---------- 中断 ----------
+
+    def abort(self) -> None:
+        """强制中断当前正在跑的流式请求（线程安全，可从任意线程调用）。
+
+        为什么非要这一手：chat() 里靠 `for raw in resp` 每收到一行才检查
+        cancel 事件，但**长上下文 prefill 期间 Ollama 一个字节都不发**，
+        迭代器阻塞在那儿，cancel 检查点根本轮不到。用户点「停止」之后，
+        后端要一直等到 prefill 跑完才有机会响应——这段时间会话锁没释放，
+        新建/切换对话全被 409 「正在生成」挡回去，界面上却已经没有停止按钮了。
+
+        注意只调 resp.close() 是**没用的**：真正卡住的地方往往还在「等响应头」，
+        那时连 resp 都还没拿到（实测 `_current_resp` 十几秒里一直是 None）。
+        urlopen 那种写法根本不暴露连接，所以这里用 http.client 自己持连接，
+        abort 时 shutdown 底层 socket，让阻塞中的 recv / getresponse 立刻返回。
+        """
+        self._abort_requested = True
+        conn = getattr(self, "_current_conn", None)
+        sock = getattr(conn, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)   # 唤醒阻塞中的 recv / 等响应头
+            except Exception:
+                pass
+        resp = getattr(self, "_current_resp", None)
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
 
     # ---------- HTTP ----------
 
-    def _post_chat(self, payload: dict) -> "urllib.response.addinfourl":
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(
-            self.host + "/api/chat",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+    def _drop_conn(self) -> None:
+        conn = getattr(self, "_current_conn", None)   # 兼容绕过 __init__ 的构造（测试）
+        self._current_conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
-        def _send(p: dict):
-            req.data = json.dumps(p, ensure_ascii=False).encode("utf-8")
-            return urllib.request.urlopen(req, timeout=self.cfg.timeout)
+    def _post_chat(self, payload: dict):
+        """POST /api/chat，返回流式响应对象。
 
+        为什么不用 urllib.request.urlopen：它在「等响应头」阶段会阻塞，
+        而这期间它不向调用方暴露任何句柄——实测长上下文 prefill 十几秒里
+        `_current_resp` 一直是 None，abort() 根本无处下手，点停止等于没反应。
+        改用 http.client 自己持有连接，abort() 才能在 conn.sock 上 shutdown 唤醒。
+        """
+        parts = urllib.parse.urlsplit(self.host)
+        host = parts.hostname or "localhost"
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        cls = (http.client.HTTPSConnection if parts.scheme == "https"
+               else http.client.HTTPConnection)
+        conn = cls(host, port, timeout=self.cfg.timeout)
+        conn.auto_open = 1
+        self._current_conn = conn
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
-            return urllib.request.urlopen(req, timeout=self.cfg.timeout)
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "replace")
-
-            # 不支持思考的模型收到 think 字段会报错 → 去掉重试一次
-            if "think" in payload and "think" in body.lower():
-                print(color(f"[提示] 该模型不接受 think 字段，自动去掉后重试: "
-                            f"{_error_text(body)[:120]}", "yellow", self.cfg.use_color),
-                      flush=True)
-                payload.pop("think", None)
-                return _send(payload)
-
-            # 图片数据无效（典型：把 xlsx/docx 当图片附上了）→ 剥离图片重试一次
-            if _payload_has_images(payload) and "image" in body.lower():
-                print(color("[提示] 附带的图片数据无效（可能把非图片文件当图片附上了），"
-                            "已剥离图片重试。", "yellow", self.cfg.use_color), flush=True)
-                try:
-                    return _send(_strip_images(payload))
-                except urllib.error.HTTPError as e2:
-                    body2 = e2.read().decode("utf-8", "replace")
-                    raise RuntimeError(
-                        f"Ollama API 错误 {e2.code}: {_error_text(body2)}") from e2
-
-            raise RuntimeError(f"Ollama API 错误 {e.code}: {_error_text(body)}") from e
+            conn.request("POST", "/api/chat", body=body,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
         except TimeoutError as e:
+            self._drop_conn()
             # 首字节之前就超时：模型加载或长上下文 prefill 太慢，此时一个 token 都没收到
             raise RuntimeError(
                 f"等 Ollama 超过 {self.cfg.timeout} 秒仍无响应（模型加载或处理长上下文太慢）。"
                 f"调大 agent/config.py 里的 timeout，或换更小的模型/上下文") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"连不上 Ollama ({self.host})：{e.reason}。请先启动 ollama serve") from e
+        except (ConnectionError, OSError) as e:
+            self._drop_conn()
+            if self._abort_requested:
+                raise            # 主动打断造成的断开，交给 chat() 按 cancelled 处理
+            raise RuntimeError(
+                f"连不上 Ollama ({self.host})：{e}。请先启动 ollama serve") from e
+
+        if resp.status != 200:
+            err_body = resp.read().decode("utf-8", "replace")
+            self._drop_conn()
+
+            # 不支持思考的模型收到 think 字段会报错 → 去掉重试一次
+            if "think" in payload and "think" in err_body.lower():
+                print(color(f"[提示] 该模型不接受 think 字段，自动去掉后重试: "
+                            f"{_error_text(err_body)[:120]}", "yellow", self.cfg.use_color),
+                      flush=True)
+                payload.pop("think", None)
+                return self._post_chat(payload)
+
+            # 图片数据无效（典型：把 xlsx/docx 当图片附上了）→ 剥离图片重试一次
+            if _payload_has_images(payload) and "image" in err_body.lower():
+                print(color("[提示] 附带的图片数据无效（可能把非图片文件当图片附上了），"
+                            "已剥离图片重试。", "yellow", self.cfg.use_color), flush=True)
+                return self._post_chat(_strip_images(payload))
+
+            raise RuntimeError(
+                f"Ollama API 错误 {resp.status}: {_error_text(err_body)}")
+
+        self._current_resp = resp
+        return resp
 
     def _base_payload(self, messages: list) -> dict:
         options: dict = {"temperature": self.temperature}
@@ -147,7 +206,16 @@ class OllamaClient:
         if tools:
             payload["tools"] = tools
 
-        resp = self._post_chat(payload)
+        self._abort_requested = False
+        try:
+            resp = self._post_chat(payload)
+        except Exception:
+            self._drop_conn()
+            if self._abort_requested:
+                # 还没拿到响应就被打断：按 cancelled 收尾，别报成连接错误
+                return {"thinking": "", "content": "", "tool_calls": [],
+                        "stats": {}, "cancelled": True, "error": None}
+            raise
 
         thinking_parts: list[str] = []
         content_parts: list[str] = []
@@ -207,10 +275,18 @@ class OllamaClient:
         except KeyboardInterrupt:
             # 终端 Ctrl+C：当作打断本轮（不向上抛，交给 run_turn 优雅收尾）
             cancelled = True
-        except (TimeoutError, OSError, http.client.HTTPException) as e:
+        except (TimeoutError, OSError, http.client.HTTPException, ValueError) as e:
             # 读超时 / 连接被重置 / chunked 数据不完整：保住已收到的部分，标记为断流。
             # 这三类以前会直接冒到 run_turn 之外，导致半截回答连历史都进不去。
-            stream_error = f"{type(e).__name__}: {e}"
+            # ValueError 那条是 abort() 关掉连接后继续 read 抛的 "read of closed file"——
+            # 用户主动停止，按打断处理，不能报成错误。
+            if self._abort_requested:
+                cancelled = True
+            else:
+                stream_error = f"{type(e).__name__}: {e}"
+
+        self._current_resp = None          # 句柄用完即弃，避免 abort 打到下一轮
+        self._drop_conn()
 
         if not cancelled and not stream_error and not done_seen:
             # 连接是正常关的，但 Ollama 从没发结束帧 → 同样是半截回答

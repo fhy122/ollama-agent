@@ -40,6 +40,9 @@ def _make_client(resp):
     cli.think = False
     cli.num_ctx = None
     cli.temperature = 0.7
+    cli._current_conn = None
+    cli._current_resp = None
+    cli._abort_requested = False
     cli._post_chat = lambda payload: resp
     return cli
 

@@ -779,8 +779,12 @@ function setBusy(busy) {
 }
 
 async function stopGeneration() {
-  if (abortCtl) abortCtl.abort();        // 断开流式连接（后端断连也会自动停）
+  // 顺序很关键：先让后端停（它会 close 连接、释放会话锁），再断本地流。
+  // 反过来做的话，本地 finally 会抢在前面跑 setBusy(false)——按钮已经变回
+  // 「发送」，后端却还锁着，此时点新建对话必被 409 挡回，界面上又没有停止按钮，
+  // 用户就卡死了。这是「已打断」却发不出消息的真正原因。
   try { await api("/api/stop", {}); } catch { /* 忽略 */ }
+  if (abortCtl) abortCtl.abort();        // 兜底：确保本地流也断开
   const modal = $("confirm-modal");
   modal.classList.add("hidden");         // 有待确认弹窗也一并关掉（后端已全部拒绝）
   $("btn-confirm-yes").onclick = null;

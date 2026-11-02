@@ -336,9 +336,19 @@ class AgentSession:
     def request_stop(self) -> None:
         """打断当前回合（HTTP 线程调用，不取会话锁，可与持锁的回合线程并行）。
 
-        三件事：停流式生成、唤醒并拒绝所有待确认工具、跳过后续工具步骤。
+        四件事：停流式生成、**掐断 HTTP 连接**、唤醒并拒绝所有待确认工具、
+        跳过后续工具步骤。
+
+        掐连接这一步不能省：长上下文 prefill 期间 Ollama 不吐任何数据，
+        读循环阻塞在 `for raw in resp` 上，cancel_event 传到不进去。
+        只置 event 的话，用户点「停止」后要干等 prefill 跑完才生效，
+        而会话锁一直没释放，界面上新建/切换对话都会被 409 挡回。
         """
         self.cancel_event.set()
+        try:
+            self.client.abort()          # 立刻断开 → 阻塞的读循环抛异常返回
+        except Exception:
+            pass
         self.gate.reject_all()
 
     def _ask(self, what: str, emitter) -> bool:
