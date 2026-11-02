@@ -1,5 +1,16 @@
 # Ollama Agent — 本地小模型工具调用代理
 
+[English](README_EN.md) | **简体中文**
+
+<p align="center">
+  <img src="docs/screenshots/chat.png" alt="Web UI 浅色主题——Excel 渲染与代码卡片" width="49%">
+  <img src="docs/screenshots/theme-dark.png" alt="Web UI 深色主题——工具调用卡片" width="49%">
+</p>
+
+**[EN]** A minimal agent for **small, local Ollama models**: function calling + thinking
+off by default + file I/O (Office & PDF) + vision + web search, with a zero-framework
+Web UI and confirmation gates on destructive tools. See [README_EN.md](README_EN.md).
+
 一个为**本地 Ollama 小模型**（如 `qwen3.5:9b`）设计的极简 Agent：
 工具调用（function calling）+ **默认关闭思考（think=false）** + 文件读写 + 图片理解 + PDF 阅读 + 联网搜索/读网页。
 
@@ -478,7 +489,7 @@ def calculator(ctx: ToolContext, expression: str) -> ToolResult:
 ## 工程结构
 
 ```
-playwritetest/
+ollama-agent/
 ├── ollama_agent.py        # 兼容入口（薄 shim，等价 python -m agent）
 ├── agent/                 # 核心层
 │   ├── config.py          #   全局配置（think、ctx、系统提示词…）
