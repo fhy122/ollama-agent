@@ -126,7 +126,8 @@ def _build_html(rows: list[list[str]], title: str, cut: bool) -> str:
     name="render_sheet",
     description=(
         "把表格文件渲染成图片（截图预览），返回后视觉模型能直接看到表格样式。"
-        "用于回答「表格做得对不对 / 长什么样 / 截个屏看看 / 排版有没有错位」。"
+        "用于回答「表格做得对不对 / 长什么样 / 截个屏看看 / 排版有没有错位」，"
+        "不要自己写 python 画图。"
         "支持 xlsx/xlsm/csv/tsv；只是想把内容读出来用 read_file 就够，不必渲染。"
     ),
     parameters={
@@ -140,8 +141,6 @@ def _build_html(rows: list[list[str]], title: str, cut: bool) -> str:
         },
         "required": ["path"],
     },
-    notes=("用户要「看表格长什么样/截个屏/检查排版对不对」时用本工具，不要自己写 python 画图；"
-           "只是想把内容读出来用 read_file。"),
 )
 def render_sheet(ctx: ToolContext, path: str, sheet: str = "",
                  max_rows: int = 40) -> ToolResult:

@@ -1,7 +1,6 @@
 """全局配置。"""
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 
 DEFAULT_MODEL = "qwen3.5:9b"
@@ -20,8 +19,11 @@ THINK_VALUES: dict[str, "bool | str | None"] = {
     "auto": None,
 }
 
-# 基础行为规则（与具体工具无关；工具专属策略在各工具的 @tool(notes=...) 里，见下）
-_BASE_PROMPT = (
+# 基础行为规则，只写与具体工具无关的约定（模型行为、工作空间、语言风格）。
+# 工具的使用策略/适用边界/反例一律写在各工具自己的 description 里——
+# description 随 tools 数组每次请求下发，是模型选工具的唯一依据，
+# 在系统提示里重复一遍只会白吃 token；工具增删也不会留下幽灵规则。
+SYSTEM_PROMPT = (
     "你是一个运行在本地的文件/网络/命令行助手。规则：\n"
     "1. 需要读文件、写文件、删除文件、精确改文件、列目录、搜代码、跑命令、"
     "看图片、读网页、联网搜索时，必须调用工具，不要凭空猜测文件内容。\n"
@@ -31,27 +33,6 @@ _BASE_PROMPT = (
     "5. 读写文件默认在工作空间内进行：用户说的相对路径都相对工作空间；"
     "只有用户明确给出绝对路径时才用绝对路径。写文件前确认路径合理；引用网页时给出链接。\n"
 )
-
-
-def _build_system_prompt() -> str:
-    """基础规则 + 按注册表动态生成的工具使用策略。
-
-    工具专属策略写在各工具的 @tool(notes=...) 里，随注册注入、随删除消失——
-    新增/删减工具不会在提示词里留下幽灵规则，模型也就不会幻觉出不存在的工具。
-    """
-    try:
-        import tools  # noqa: F401  触发全部工具注册
-        notes = tools.all_notes()
-    except Exception as e:  # 工具加载失败不炸配置，只是提示词里没有策略
-        print(f"[config] 工具策略加载失败，SYSTEM_PROMPT 不含工具 notes: {e}",
-              file=sys.stderr)
-        notes = []
-    if not notes:
-        return _BASE_PROMPT
-    return _BASE_PROMPT + "\n工具使用策略：\n" + "\n".join(notes) + "\n"
-
-
-SYSTEM_PROMPT = _build_system_prompt()
 
 
 @dataclass

@@ -14,7 +14,8 @@ from tools._common import decode_text, display_path, is_binary_chunk
         "old_string 必须与文件内容完全一致（含空格/缩进/换行），且默认必须只出现一次；"
         "出现多次时会拒绝，可加更多上下文使其唯一，或传 replace_all=true 全部替换。"
         "适合改函数/配置/单行的小改动；整个文件重写或新建文件才用 write_file。"
-        "改完建议 read_file 复核，代码改动用 run_command 跑测试验证。"
+        "改代码的闭环：grep_file/glob_file 定位 → read_file 读懂 → edit_file 修改 → "
+        "run_command 跑测试验证；改完 read_file 复核。"
     ),
     parameters={
         "type": "object",
@@ -39,8 +40,6 @@ from tools._common import decode_text, display_path, is_binary_chunk
         "required": ["path", "old_string", "new_string"],
     },
     confirm=True,  # 改盘属于改动操作，配合 --confirm / Web 弹窗人工把关
-    notes=("改代码的闭环：grep_file/glob_file 定位 → read_file 读懂 → edit_file 修改 → "
-           "run_command 跑测试验证。小改动一律优先 edit_file，整文件重写才用 write_file。"),
 )
 def edit_file(ctx: ToolContext, path: str, old_string: str, new_string: str,
               replace_all: bool = False) -> ToolResult:

@@ -38,7 +38,6 @@ from tools._common import clip_text, decode_text
         "required": ["command"],
     },
     confirm=True,  # 任意命令执行是高危能力，配合 --confirm / Web 弹窗人工把关
-    notes=("破坏性命令（删数据、git push --force 等）只在用户明确要求时执行。"),
 )
 def run_command(ctx: ToolContext, command: str, cwd: str | None = None,
                 timeout: float = 120) -> ToolResult:
