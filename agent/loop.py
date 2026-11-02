@@ -1,0 +1,272 @@
+"""Agent 主循环：消息历史、工具派发、多步执行。
+
+输出走 emitter（见 agent/events.py），控制台/HTTP 流共用本循环。
+"""
+from __future__ import annotations
+
+import json
+import re
+import time
+
+from agent.client import OllamaClient
+from agent.config import SYSTEM_PROMPT, AgentConfig
+from agent.events import ConsoleEmitter
+from agent.registry import ToolContext, ToolResult
+
+import tools
+
+
+# ---------- 外脑委派：用户点名时补一条硬指令 ----------
+
+_EXPERT_ASK = re.compile(r"(外脑|豆包|文心|问问\s*(网页|外|别的|其它|其他)?\s*(AI|ai))")
+_EXPERT_DENY = re.compile(r"(不要|别|禁止|无需|不需要|不用)\s*(用|让|找)?\s*(外脑|豆包|文心)")
+
+_EXPERT_HINT = (
+    "\n\n[系统指令] 用户点名要用外脑（web_chat）。下一步必须调用 web_chat："
+    "把项目背景、你已经读到的结构或关键代码片段、具体问题、期望的输出格式，"
+    "合并成一个自包含的 question 发过去（代码片段直接粘，这是预期用法）。"
+    "已经拿到的信息直接复用，不要再用 list_dir/read_file 反复采集。"
+    "拿到外脑的回答后，直接按它的建议继续本地工作，不要停下来问「要不要继续」。"
+)
+
+
+def _expert_available() -> bool:
+    """web_chat 是可选私有模块（公开仓库不含），没注册时外脑委派整体关闭。"""
+    return tools.get("web_chat") is not None
+
+
+def expert_requested(user_text: str) -> bool:
+    """用户是否点名要用外脑（"不要用外脑"这类否定说法不算）。"""
+    if not user_text or _EXPERT_DENY.search(user_text):
+        return False
+    return bool(_EXPERT_ASK.search(user_text))
+
+
+def expert_hint(user_text: str) -> str:
+    """点名用外脑时，把下一步动作写死补在消息末尾。
+
+    为什么要这么硬：9B 这类小模型面对「用外脑分析项目」会一直 list_dir/read_file
+    采集（实测连续三次 list_dir 也不肯委派），光靠系统提示里的抽象规则不管用。
+    """
+    if not _expert_available() or not expert_requested(user_text):
+        return user_text
+    return user_text + _EXPERT_HINT
+
+
+_ASK_QUESTION = (
+    "[系统指令] 现在只做一件事：写出要发给外脑的问题正文。"
+    "不要调用任何工具，不要解释你在做什么，不要复述上下文，直接输出问题本身。"
+    "问题里必须说清：①这个项目/文件是什么、用什么技术栈；"
+    "②要它帮你分析什么问题；③希望它按什么结构回答。"
+)
+
+
+def _delegate_to_expert(client, cfg, ctx, history, emitter, user_text) -> None:
+    """把当前任务交给外脑：先让模型写问题，再代它调 web_chat，把回答注入历史。
+
+    为什么由代码代劳而不是等模型自己调工具：实测 9B 连续三轮 list_dir 也不肯委派；
+    把工具列表裁到只剩 web_chat，它反而幻觉出被裁掉的工具名（调一个不存在的 list_dir）。
+    小模型擅长的是「写字」而不是「选工具」，所以让它只负责写问题，调用由这里完成。
+    """
+    if not _expert_available():
+        return
+    emitter.notice("[按你的要求，把任务交给外脑；拿到回答后继续本地工作]")
+    question = ""
+    try:
+        probe = history + [{"role": "user", "content": _ASK_QUESTION}]
+        resp = client.chat(probe, tools=None, on_think=emitter.think)
+        question = (resp.get("content") or "").strip()
+    except Exception:
+        question = ""
+
+    if len(question) < 20:
+        # 模型没按要求写 → 用用户原话 + 最近一次工具结果兜底，别让委派失败
+        last_tool = next((m.get("content", "") for m in reversed(history)
+                          if m.get("role") == "tool"), "")
+        question = (user_text + "\n\n已知项目信息：\n" + (last_tool or "（无）") +
+                    "\n\n请分析并给出建议，按「结论 / 问题 / 改进建议」三段回答。")
+
+    args = {"question": question, "site": "doubao"}
+    emitter.tool_call("web_chat", args)
+    t0 = time.time()
+    res = tools.dispatch("web_chat", args, ctx)
+    emitter.tool_result("web_chat", res.text, time.time() - t0)
+    history.append({"role": "assistant", "content": "",
+                    "tool_calls": [{"function": {"name": "web_chat", "arguments": args}}]})
+    history.append({"role": "tool", "content": res.text, "tool_name": "web_chat"})
+    if "[错误]" in res.text:
+        # 外脑没连上就别让它反复试同一个工具把步数耗光
+        history.append({"role": "user", "content":
+                        "[系统] 外脑这次没连通，不要再调用 web_chat。"
+                        "改用本地工具（read_file/grep_file 等）自己完成分析，"
+                        "并在回答里说清「外脑本次不可用」和失败原因。"})
+
+
+def strip_old_images(history: list) -> None:
+    """图片只在当前回合保留；历史里的图片剥掉省 token。"""
+    for msg in history:
+        if msg.get("images"):
+            msg.pop("images", None)
+            msg["content"] += "\n[图片已从上下文剥离以节省 token]"
+
+
+def pad_unanswered_tool_calls(history: list) -> int:
+    """打断收尾：末条 assistant 声明了 tool_calls 但缺响应时，补齐占位消息。
+
+    返回补了几条。缺响应的 tool_calls 会让下一轮请求被 Ollama 拒绝
+    （assistant.tool_calls 必须跟对应的 tool 消息），所以必须补。
+    """
+    idx = len(history) - 1
+    answered = 0
+    while idx >= 0 and history[idx].get("role") == "tool":
+        answered += 1
+        idx -= 1
+    if idx < 0 or history[idx].get("role") != "assistant":
+        return 0
+    calls = history[idx].get("tool_calls") or []
+    missing = calls[answered:]
+    for tc in missing:
+        history.append({"role": "tool",
+                        "content": "[已被用户打断，未执行]",
+                        "tool_name": (tc.get("function") or {}).get("name", "?")})
+    return len(missing)
+
+
+def new_history(workspace: str | None = None) -> list:
+    prompt = SYSTEM_PROMPT
+    if workspace:
+        prompt += f"\n当前工作空间目录: {workspace}"
+    try:  # 技能索引（名称+短描述）常驻；正文由 skill 工具按需加载
+        from tools.skill import skill_index
+        idx = skill_index(workspace)
+        if idx:
+            prompt += "\n" + idx
+    except Exception:
+        pass
+    return [{"role": "system", "content": prompt}]
+
+
+def run_turn(client: OllamaClient, cfg: AgentConfig, ctx: ToolContext,
+             history: list, user_text: str, images: list[str] | None = None,
+             emitter=None, cancel=None) -> str:
+    """跑一个用户回合（含多轮工具调用），返回最终回答。
+
+    emitter: 事件发射器；缺省用 ConsoleEmitter（终端输出）。
+    cancel:  可选 threading.Event；置位后打断本轮（停流式生成、跳过未执行工具）。
+    """
+    if emitter is None:
+        emitter = ConsoleEmitter(cfg)
+
+    strip_old_images(history)
+
+    user_msg = {"role": "user", "content": expert_hint(user_text)}
+    if images:
+        user_msg["images"] = images
+    history.append(user_msg)
+
+    tools_spec = None if cfg.no_tools else tools.all_specs()
+    want_expert = _expert_available() and expert_requested(user_text)  # 用户点名要用外脑
+    expert_done = False                         # 本回合是否已经问过外脑
+    final_text = ""
+    resp: dict = {}
+
+    def _stopped() -> bool:
+        return cancel is not None and cancel.is_set()
+
+    try:
+        for step in range(1, cfg.max_steps + 1):
+            if _stopped():
+                emitter.notice("[⏹ 已打断本轮回答]")
+                break
+            emitter.step(step)
+            # 点名用外脑：先给一步时间采集，之后由代码直接委派给外脑
+            # （小模型自己不会停手，详见 _delegate_to_expert 里的实测说明）
+            if want_expert and not expert_done and step >= 2:
+                expert_done = True
+                _delegate_to_expert(client, cfg, ctx, history, emitter, user_text)
+                continue
+            resp = client.chat(
+                history,
+                tools=tools_spec,
+                on_text=emitter.text,
+                on_think=emitter.think,
+                cancel=cancel,
+            )
+            emitter.newline()
+
+            content = resp["content"]
+            tool_calls = resp["tool_calls"]
+
+            if resp.get("cancelled"):
+                # 流式生成被打断：部分回答入历史（保持对话结构合法），不再执行工具
+                assistant_msg = {"role": "assistant",
+                                 "content": (content + "\n[已被用户打断]").strip()
+                                 if content else "[已被用户打断]"}
+                history.append(assistant_msg)
+                final_text = content
+                emitter.notice("[⏹ 已打断本轮回答]")
+                break
+
+            if resp.get("error"):
+                # 断流（读超时 / 连接重置 / 没收到结束帧）：已生成的部分必须入历史，
+                # 否则用户看到的字会凭空消失，接着说「继续」时模型也不知道自己说到哪。
+                err = resp["error"]
+                note = f"[回答中断：{err}]"
+                history.append({"role": "assistant",
+                                "content": (content + "\n" + note) if content else note})
+                final_text = content
+                emitter.notice(f"[⚠ 回答中断：{err}] 已保留生成到的部分，可直接说「继续」")
+                break
+
+            assistant_msg: dict = {"role": "assistant", "content": content}
+            if tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {"function": {"name": tc["function"]["name"],
+                                  "arguments": tc["function"]["arguments"]}}
+                    for tc in tool_calls
+                ]
+            history.append(assistant_msg)
+
+            if not tool_calls:
+                final_text = content
+                break
+
+            for i, tc in enumerate(tool_calls):
+                name = tc["function"]["name"]
+                if name == "web_chat":
+                    expert_done = True      # 问过外脑了，后面恢复正常工具集
+                args = tc["function"].get("arguments") or {}
+                if not isinstance(args, dict):
+                    args = {}
+                if _stopped():
+                    # 已声明未执行的 tool_calls 补占位结果，保持历史合法
+                    for tc2 in tool_calls[i:]:
+                        n2 = tc2["function"]["name"]
+                        history.append({"role": "tool",
+                                        "content": "[已被用户打断，未执行]",
+                                        "tool_name": n2})
+                    emitter.notice("[⏹ 已打断，跳过未执行的工具]")
+                    final_text = content
+                    return final_text
+                emitter.tool_call(name, args)
+                t0 = time.time()
+                result: ToolResult = tools.dispatch(name, args, ctx)
+                dt = time.time() - t0
+                emitter.tool_result(name, result.text, dt, images=result.images)
+
+                tool_msg: dict = {"role": "tool", "content": result.text, "tool_name": name}
+                if result.images:
+                    tool_msg["images"] = result.images
+                history.append(tool_msg)
+        else:
+            final_text = "[已达到最大工具步数，强制结束]"
+            emitter.notice(final_text)
+    except KeyboardInterrupt:
+        # 终端 Ctrl+C 落在工具执行/步骤切换处：补占位后回到输入提示（不退出程序）
+        pad_unanswered_tool_calls(history)
+        emitter.newline()
+        emitter.notice("[⏹ 已打断本轮回答]")
+        return resp.get("content") or ""
+
+    emitter.stats(resp.get("stats") or {})
+    return final_text

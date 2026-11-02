@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 运行时缓存（工具产生的临时文件）
+.clip_cache/
+.uploads/
+.ck_probe/
+
+# Playwright 持久化浏览器 profile（browse_url / web_search 用，十几 MB）
+.bing_profile/
+
+# 外脑登录态（web_chat --login 写入，含账号 cookie，绝不入库）
+.webchat_profile*
+
+# web_chat 自动化外脑（ToS 灰色地带，私有模块，绝不入库——公开仓库见法律风险）
+tools/web_chat.py
+
+# AI 助手的工作痕迹（对话记忆日志），不属于项目源码
+.workbuddy/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# 日志与本地导出
+*.log

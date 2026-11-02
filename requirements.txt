@@ -1,0 +1,7 @@
+# Office 读写（read_file 解析 + write_file 生成）
+openpyxl>=3.1
+python-docx>=1.1
+
+# 可选——仅 browse_url / web_search(兜底路线) / web_chat 需要：
+playwright>=1.40
+# 安装后执行：playwright install chromium

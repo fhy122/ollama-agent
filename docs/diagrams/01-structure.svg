@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 524" width="100%" role="img">
+<title>ollama-agent 目录结构</title>
+<desc>根目录含 ollama_agent.py 等入口文件，下有 agent 内核、tools 能力层、webui 前端、tests 回归四个目录。</desc>
+<rect x="0" y="0" width="680" height="524" fill="#FFFFFF"/>
+<rect x="40" y="30" width="600" height="480" rx="20" fill="#F7F6F2" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="60" y="54" font-family="system-ui, sans-serif" font-size="14" font-weight="500" fill="#2C2C2A" dominant-baseline="central">ollama-agent</text>
+<text x="620" y="54" font-family="system-ui, sans-serif" font-size="12" fill="#5F5E5A" text-anchor="end" dominant-baseline="central">7,000 行 Python · 1,300 行前端</text>
+<rect x="60" y="70" width="560" height="34" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="340" y="87" font-family="ui-monospace, monospace" font-size="11" fill="#444441" text-anchor="middle" dominant-baseline="central">ollama_agent.py · requirements.txt · README.md · docs/CODE_READING.md</text>
+
+<rect x="60" y="118" width="270" height="180" rx="12" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="76" y="140" font-family="system-ui, sans-serif" font-size="13" font-weight="500" fill="#0C447C" dominant-baseline="central">agent/ · 内核</text>
+<text x="76" y="162" font-family="ui-monospace, monospace" font-size="11" fill="#185FA5" dominant-baseline="central">config.py · registry.py</text>
+<text x="76" y="181" font-family="ui-monospace, monospace" font-size="11" fill="#185FA5" dominant-baseline="central">loop.py · client.py</text>
+<text x="76" y="200" font-family="ui-monospace, monospace" font-size="11" fill="#185FA5" dominant-baseline="central">events.py · cli.py</text>
+<text x="76" y="219" font-family="ui-monospace, monospace" font-size="11" fill="#185FA5" dominant-baseline="central">palette.py · console.py</text>
+<text x="76" y="238" font-family="ui-monospace, monospace" font-size="11" fill="#185FA5" dominant-baseline="central">docgen.py · docparse.py</text>
+<text x="76" y="257" font-family="ui-monospace, monospace" font-size="11" fill="#185FA5" dominant-baseline="central">clipboard.py · hotkeys.py</text>
+<text x="76" y="276" font-family="ui-monospace, monospace" font-size="11" fill="#185FA5" dominant-baseline="central">__main__.py</text>
+
+<rect x="350" y="118" width="270" height="180" rx="12" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="366" y="140" font-family="system-ui, sans-serif" font-size="13" font-weight="500" fill="#085041" dominant-baseline="central">tools/ · 能力层（15 个）</text>
+<text x="366" y="162" font-family="ui-monospace, monospace" font-size="11" fill="#0F6E56" dominant-baseline="central">read_file · list_dir</text>
+<text x="366" y="181" font-family="ui-monospace, monospace" font-size="11" fill="#0F6E56" dominant-baseline="central">glob_file · grep_file</text>
+<text x="366" y="200" font-family="ui-monospace, monospace" font-size="11" fill="#0F6E56" dominant-baseline="central">load_image · clipboard_image</text>
+<text x="366" y="219" font-family="ui-monospace, monospace" font-size="11" fill="#0F6E56" dominant-baseline="central">write_file · edit_file</text>
+<text x="366" y="238" font-family="ui-monospace, monospace" font-size="11" fill="#0F6E56" dominant-baseline="central">delete_file · run_command</text>
+<text x="366" y="257" font-family="ui-monospace, monospace" font-size="11" fill="#0F6E56" dominant-baseline="central">web_search · browse_url · web_chat</text>
+<text x="366" y="276" font-family="ui-monospace, monospace" font-size="11" fill="#0F6E56" dominant-baseline="central">skill · render_sheet · _common</text>
+
+<rect x="60" y="310" width="270" height="180" rx="12" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="76" y="332" font-family="system-ui, sans-serif" font-size="13" font-weight="500" fill="#3C3489" dominant-baseline="central">webui/ · 第二前端</text>
+<text x="76" y="354" font-family="ui-monospace, monospace" font-size="11" fill="#534AB7" dominant-baseline="central">server.py · session.py</text>
+<text x="76" y="373" font-family="ui-monospace, monospace" font-size="11" fill="#534AB7" dominant-baseline="central">stream.py · __main__.py</text>
+<text x="76" y="392" font-family="ui-monospace, monospace" font-size="11" fill="#534AB7" dominant-baseline="central">static/index.html</text>
+<text x="76" y="411" font-family="ui-monospace, monospace" font-size="11" fill="#534AB7" dominant-baseline="central">static/app.js</text>
+<text x="76" y="430" font-family="ui-monospace, monospace" font-size="11" fill="#534AB7" dominant-baseline="central">static/style.css</text>
+
+<rect x="350" y="310" width="270" height="180" rx="12" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="366" y="332" font-family="system-ui, sans-serif" font-size="13" font-weight="500" fill="#444441" dominant-baseline="central">tests/ · 回归（非 pytest）</text>
+<text x="366" y="354" font-family="ui-monospace, monospace" font-size="11" fill="#5F5E5A" dominant-baseline="central">test_tools.py（708 行）</text>
+<text x="366" y="373" font-family="ui-monospace, monospace" font-size="11" fill="#5F5E5A" dominant-baseline="central">test_webui.py</text>
+<text x="366" y="392" font-family="ui-monospace, monospace" font-size="11" fill="#5F5E5A" dominant-baseline="central">test_cli_palette_console.py</text>
+<text x="366" y="411" font-family="ui-monospace, monospace" font-size="11" fill="#5F5E5A" dominant-baseline="central">test_client_errors.py</text>
+<text x="366" y="430" font-family="ui-monospace, monospace" font-size="11" fill="#5F5E5A" dominant-baseline="central">test_interrupt.py</text>
+<text x="366" y="459" font-family="system-ui, sans-serif" font-size="11" fill="#888780" dominant-baseline="central">python tests/xxx.py → PASS / SKIP</text>
+</svg>

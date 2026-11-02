@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 386" width="100%" role="img">
+<title>三个读类工具的互相排除</title>
+<desc>用户说"打开看看"时，模型要在 read_file、render_sheet、load_image 之间选择；三个工具的描述里各自写了什么时候不要用自己，以及该改用哪个。</desc>
+<rect x="0" y="0" width="680" height="386" fill="#FFFFFF"/>
+
+<text x="24" y="32" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#2C2C2A">用户说「帮我看看这个」时，模型要在三个工具之间排除</text>
+<text x="24" y="52" font-family="system-ui, sans-serif" font-size="12" fill="#888780">排不掉就会硬把 docx 当图片加载，Ollama 直接 400 —— 所以每个易混工具的描述里都要写「什么时候别用我」</text>
+
+<rect x="170" y="72" width="340" height="40" rx="6" fill="#F7F6F1" stroke="#D9D6CC" stroke-width="0.5"/>
+<text x="340" y="92" font-family="system-ui, sans-serif" font-size="12" fill="#2C2C2A" text-anchor="middle" dominant-baseline="central">用户：打开 report.xlsx 看看 / 这表格做得对吗</text>
+
+<line x1="340" y1="112" x2="340" y2="134" stroke="#C9C5B8" stroke-width="1"/>
+<line x1="125" y1="134" x2="555" y2="134" stroke="#C9C5B8" stroke-width="1"/>
+<line x1="125" y1="134" x2="125" y2="146" stroke="#C9C5B8" stroke-width="1"/>
+<line x1="340" y1="134" x2="340" y2="146" stroke="#C9C5B8" stroke-width="1"/>
+<line x1="555" y1="134" x2="555" y2="146" stroke="#C9C5B8" stroke-width="1"/>
+<polygon points="125,154 121,146 129,146" fill="#C9C5B8"/>
+<polygon points="340,154 336,146 344,146" fill="#C9C5B8"/>
+<polygon points="555,154 551,146 559,146" fill="#C9C5B8"/>
+
+<rect x="36" y="156" width="178" height="64" rx="5" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="125" y="176" font-family="system-ui, sans-serif" font-size="12.5" font-weight="600" fill="#185FA5" text-anchor="middle" dominant-baseline="central">read_file</text>
+<text x="125" y="195" font-family="system-ui, sans-serif" font-size="10" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">docx / xlsx / pptx → 文本</text>
+<text x="125" y="210" font-family="system-ui, sans-serif" font-size="10" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">文本文件按行返回</text>
+
+<rect x="251" y="156" width="178" height="64" rx="5" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="340" y="176" font-family="system-ui, sans-serif" font-size="12.5" font-weight="600" fill="#854F0B" text-anchor="middle" dominant-baseline="central">render_sheet</text>
+<text x="340" y="195" font-family="system-ui, sans-serif" font-size="10" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">xlsx / xlsm / csv / tsv → 截图</text>
+<text x="340" y="210" font-family="system-ui, sans-serif" font-size="10" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">看排版、看错位</text>
+
+<rect x="466" y="156" width="178" height="64" rx="5" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="555" y="176" font-family="system-ui, sans-serif" font-size="12.5" font-weight="600" fill="#0F6E56" text-anchor="middle" dominant-baseline="central">load_image</text>
+<text x="555" y="195" font-family="system-ui, sans-serif" font-size="10" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">png / jpg / webp / gif / bmp</text>
+<text x="555" y="210" font-family="system-ui, sans-serif" font-size="10" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">base64 给视觉模型</text>
+
+<text x="36" y="240" font-family="system-ui, sans-serif" font-size="10.5" fill="#888780" dominant-baseline="central">三条互斥句分别写在谁的描述里（只写一边不够，模型可能先读到另一边）</text>
+
+<rect x="36" y="254" width="7" height="7" rx="1" fill="#0F6E56"/>
+<text x="52" y="258" font-family="system-ui, sans-serif" font-size="10.5" fill="#444441" dominant-baseline="central">load_image：「只能加载图片；xlsx/docx/pptx/pdf/csv 请改用 read_file」</text>
+
+<rect x="36" y="274" width="7" height="7" rx="1" fill="#854F0B"/>
+<text x="52" y="278" font-family="system-ui, sans-serif" font-size="10.5" fill="#444441" dominant-baseline="central">render_sheet：「只是想把内容读出来，用 read_file 就够，不必渲染」</text>
+
+<rect x="36" y="294" width="7" height="7" rx="1" fill="#185FA5"/>
+<text x="52" y="298" font-family="system-ui, sans-serif" font-size="10.5" fill="#444441" dominant-baseline="central">read_file：「支持 .docx / .xlsx / .pptx，按工作表、按页返回」</text>
+
+<rect x="36" y="316" width="608" height="52" rx="6" fill="#FFFFFF" stroke="#B9B4A4" stroke-width="0.8" stroke-dasharray="4 3"/>
+<text x="52" y="334" font-family="system-ui, sans-serif" font-size="10.5" fill="#2C2C2A" dominant-baseline="central" font-weight="600">特例：用户说「我截图了 / 看剪贴板」且没给路径 → clipboard_image，不是 load_image</text>
+<text x="52" y="352" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">它不吃 path 参数，直接读系统剪贴板并缓存到 .clip_cache/ —— 触发语是「没有给文件路径」，条件写在描述第一句</text>
+</svg>

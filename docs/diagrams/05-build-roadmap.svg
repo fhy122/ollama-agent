@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 420" width="100%" role="img">
+<title>重写路线：里程碑与代码量</title>
+<desc>七个里程碑的累计代码行数：M1 单文件对话 35 行，M2 配置与客户端 300 行，M3 工具协议 540 行，M4 主循环 700 行，M5 事件接口 790 行，M6 命令行 1050 行，M7 WebUI 1500 行。</desc>
+<rect x="0" y="0" width="680" height="420" fill="#FFFFFF"/>
+
+<text x="24" y="32" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#2C2C2A">重写路线：每章都是一个可运行状态</text>
+<text x="24" y="52" font-family="system-ui, sans-serif" font-size="12" fill="#888780">柱长为累计代码量（教程内，不含第 8 章能力层）；每根柱子对应的章节结束后都能直接运行</text>
+
+<rect x="452" y="20" width="10" height="10" rx="2" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="468" y="29" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" dominant-baseline="central">内核</text>
+<rect x="512" y="20" width="10" height="10" rx="2" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="528" y="29" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" dominant-baseline="central">CLI</text>
+<rect x="568" y="20" width="10" height="10" rx="2" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="584" y="29" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" dominant-baseline="central">WebUI</text>
+
+<line x1="170" y1="70" x2="170" y2="330" stroke="#D9D6CC" stroke-width="1"/>
+<line x1="250" y1="70" x2="250" y2="330" stroke="#EFEDE6" stroke-width="1" stroke-dasharray="3 4"/>
+<line x1="330" y1="70" x2="330" y2="330" stroke="#EFEDE6" stroke-width="1" stroke-dasharray="3 4"/>
+<line x1="410" y1="70" x2="410" y2="330" stroke="#EFEDE6" stroke-width="1" stroke-dasharray="3 4"/>
+<line x1="490" y1="70" x2="490" y2="330" stroke="#EFEDE6" stroke-width="1" stroke-dasharray="3 4"/>
+<line x1="570" y1="70" x2="570" y2="330" stroke="#EFEDE6" stroke-width="1" stroke-dasharray="3 4"/>
+
+<rect x="170" y="75" width="10" height="18" rx="3" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="18" y="85" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" dominant-baseline="central">M1</text>
+<text x="44" y="85" font-family="system-ui, sans-serif" font-size="12" fill="#444441" dominant-baseline="central">单文件对话</text>
+<text x="189" y="85" font-family="system-ui, sans-serif" font-size="11" fill="#888780" dominant-baseline="central">35 行</text>
+
+<rect x="170" y="113" width="80" height="18" rx="3" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="18" y="123" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" dominant-baseline="central">M2</text>
+<text x="44" y="123" font-family="system-ui, sans-serif" font-size="12" fill="#444441" dominant-baseline="central">配置 + 客户端</text>
+<text x="259" y="123" font-family="system-ui, sans-serif" font-size="11" fill="#888780" dominant-baseline="central">300 行</text>
+
+<rect x="170" y="151" width="144" height="18" rx="3" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="18" y="161" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" dominant-baseline="central">M3</text>
+<text x="44" y="161" font-family="system-ui, sans-serif" font-size="12" fill="#444441" dominant-baseline="central">工具协议</text>
+<text x="323" y="161" font-family="system-ui, sans-serif" font-size="11" fill="#888780" dominant-baseline="central">540 行</text>
+
+<rect x="170" y="189" width="187" height="18" rx="3" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="18" y="199" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" dominant-baseline="central">M4</text>
+<text x="44" y="199" font-family="system-ui, sans-serif" font-size="12" fill="#444441" dominant-baseline="central">主循环 run_turn</text>
+<text x="366" y="199" font-family="system-ui, sans-serif" font-size="11" fill="#888780" dominant-baseline="central">700 行</text>
+
+<rect x="170" y="227" width="211" height="18" rx="3" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="18" y="237" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" dominant-baseline="central">M5</text>
+<text x="44" y="237" font-family="system-ui, sans-serif" font-size="12" fill="#444441" dominant-baseline="central">事件接口 emitter</text>
+<text x="390" y="237" font-family="system-ui, sans-serif" font-size="11" fill="#888780" dominant-baseline="central">790 行</text>
+
+<rect x="170" y="265" width="280" height="18" rx="3" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="18" y="275" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" dominant-baseline="central">M6</text>
+<text x="44" y="275" font-family="system-ui, sans-serif" font-size="12" fill="#444441" dominant-baseline="central">命令行成品</text>
+<text x="459" y="275" font-family="system-ui, sans-serif" font-size="11" fill="#888780" dominant-baseline="central">1050 行</text>
+
+<rect x="170" y="303" width="400" height="18" rx="3" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="18" y="313" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" dominant-baseline="central">M7</text>
+<text x="44" y="313" font-family="system-ui, sans-serif" font-size="12" fill="#444441" dominant-baseline="central">WebUI 第二前端</text>
+<text x="578" y="313" font-family="system-ui, sans-serif" font-size="11" fill="#888780" dominant-baseline="central">1500 行</text>
+
+<line x1="170" y1="330" x2="590" y2="330" stroke="#D9D6CC" stroke-width="1"/>
+<text x="170" y="344" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">0</text>
+<text x="250" y="344" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">300</text>
+<text x="330" y="344" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">600</text>
+<text x="410" y="344" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">900</text>
+<text x="490" y="344" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">1200</text>
+<text x="570" y="344" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">1500 行</text>
+
+<text x="340" y="390" font-family="system-ui, sans-serif" font-size="11" fill="#888780" text-anchor="middle" dominant-baseline="central">M4 只加了 150 行，却是从"能对话"到"能干活"的分水岭；M7 加得最多，但没动内核一行</text>
+</svg>

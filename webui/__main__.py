@@ -1,0 +1,47 @@
+"""python -m webui 启动 Web UI。"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from agent.config import DEFAULT_CTX, DEFAULT_HOST, DEFAULT_MODEL, MAX_TOOL_STEPS, \
+    THINK_VALUES, AgentConfig
+from webui.server import WebUIApp
+
+
+def main(argv: list[str] | None = None):
+    ap = argparse.ArgumentParser(prog="webui", description="Ollama Agent Web UI")
+    ap.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1（仅本机）")
+    ap.add_argument("--port", type=int, default=8888, help="端口，默认 8888")
+    ap.add_argument("--ollama", default=DEFAULT_HOST, help=f"Ollama 地址，默认 {DEFAULT_HOST}")
+    ap.add_argument("--model", default=DEFAULT_MODEL, help=f"模型名，默认 {DEFAULT_MODEL}")
+    ap.add_argument("--think", default="off", choices=list(THINK_VALUES),
+                    help="思考模式，默认 off")
+    ap.add_argument("--ctx", type=int, default=DEFAULT_CTX,
+                    help=f"num_ctx，默认 {DEFAULT_CTX}；0=服务端默认")
+    ap.add_argument("--workspace", "-w", default=None, help="工作空间目录，默认当前目录")
+    ap.add_argument("--max-steps", type=int, default=MAX_TOOL_STEPS)
+    ap.add_argument("--no-hotkey", action="store_true", help="不注册全局热键 Alt+V")
+    ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    ap.add_argument("--no-warm", action="store_true",
+                    help="启动时不预热模型（默认会先把模型载入显存/内存）")
+    args = ap.parse_args(argv)
+
+    cfg = AgentConfig(
+        host=args.ollama,
+        model=args.model,
+        think=args.think,
+        num_ctx=(args.ctx if args.ctx > 0 else None),
+        max_steps=args.max_steps,
+        use_color=False,
+        warm=not args.no_warm,
+        workspace=str(Path(args.workspace).expanduser().resolve()) if args.workspace else "",
+    )
+    app = WebUIApp(cfg, host=args.host, port=args.port)
+    if args.no_hotkey:
+        app.start_hotkey = lambda: False  # type: ignore
+    app.serve(open_browser=not args.no_browser)
+
+
+if __name__ == "__main__":
+    main()

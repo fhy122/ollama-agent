@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 360" width="100%" role="img">
+<title>每次请求常驻的提示词预算</title>
+<desc>实测 15 个工具的规格：参数 JSON Schema 3977 字符占 46%，工具描述 2358 字符占 27%，工具名与包装 1399 字符占 16%，系统提示词 976 字符占 11%，合计约 8700 字符，每轮请求都要重发。</desc>
+<rect x="0" y="0" width="680" height="360" fill="#FFFFFF"/>
+
+<text x="24" y="32" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#2C2C2A">每次请求都要重发一遍的「提示词预算」</text>
+<text x="24" y="52" font-family="system-ui, sans-serif" font-size="12" fill="#888780">实测本仓库 15 个工具：tools 数组 7734 字符 + 系统提示词 976 字符 ≈ 8700 字符，每一轮对话都重新发一次</text>
+
+<text x="24" y="111" font-family="system-ui, sans-serif" font-size="11" fill="#444441" dominant-baseline="central">参数 JSON Schema</text>
+<rect x="200" y="100" width="340" height="22" rx="3" fill="#EFEDE6" stroke="#D9D6CC" stroke-width="0.5"/>
+<text x="550" y="111" font-family="system-ui, sans-serif" font-size="10" fill="#5F5E5A" dominant-baseline="central">3977 · 46%</text>
+
+<text x="24" y="153" font-family="system-ui, sans-serif" font-size="11" fill="#444441" dominant-baseline="central">工具 description</text>
+<rect x="200" y="142" width="202" height="22" rx="3" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="412" y="153" font-family="system-ui, sans-serif" font-size="10" fill="#185FA5" dominant-baseline="central">2358 · 27%</text>
+
+<text x="24" y="195" font-family="system-ui, sans-serif" font-size="11" fill="#444441" dominant-baseline="central">工具名 + 包装</text>
+<rect x="200" y="184" width="120" height="22" rx="3" fill="#F5F4EF" stroke="#E0DDD2" stroke-width="0.5"/>
+<text x="330" y="195" font-family="system-ui, sans-serif" font-size="10" fill="#5F5E5A" dominant-baseline="central">1399 · 16%</text>
+
+<text x="24" y="237" font-family="system-ui, sans-serif" font-size="11" fill="#444441" dominant-baseline="central">系统提示词</text>
+<rect x="200" y="226" width="83" height="22" rx="3" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="293" y="237" font-family="system-ui, sans-serif" font-size="10" fill="#854F0B" dominant-baseline="central">976 · 11%</text>
+
+<rect x="24" y="270" width="632" height="74" rx="6" fill="#F7F6F1" stroke="#E8E5DA" stroke-width="0.5"/>
+<text x="40" y="294" font-family="system-ui, sans-serif" font-size="11" fill="#444441" dominant-baseline="central">蓝色 + 黄色是人写的，两段灰色由注册表自动生成。工具描述是系统提示词的 2.4 倍 ——</text>
+<text x="40" y="312" font-family="system-ui, sans-serif" font-size="11" fill="#2C2C2A" dominant-baseline="central" font-weight="600">所谓「写提示词」，主战场在 tools 数组，不在那句 system 里。</text>
+<text x="40" y="330" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">15 个 desc 平均 157 字符：最长 write_file 360（三种文件格式挤在一个工具里），最短 browse_url 40（边界最清楚，不需要解释）</text>
+</svg>

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ollama Agent</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="shell">
+  <!-- ================= 侧栏 ================= -->
+  <aside id="sidebar">
+    <div class="sb-head">
+      <div class="brand">
+        <span class="logo">◎</span>
+        <span class="brand-name">Ollama Agent</span>
+      </div>
+      <button class="icon-btn sb-collapse" id="btn-sidebar-toggle" title="收起侧栏（Ctrl+B）" aria-label="收起侧栏" aria-expanded="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+
+    <button class="new-chat" id="btn-new-chat">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span>新对话</span>
+    </button>
+
+    <nav class="sb-scroll">
+      <div class="sb-section">
+        <div class="sb-title">本次会话
+          <span class="sb-title-acts">
+            <button class="link-btn" id="btn-reset" title="清空本条对话（其他对话不受影响）">清空</button>
+            <button class="link-btn" id="btn-refresh-outline" title="滚动到最新">回底部</button>
+          </span>
+        </div>
+        <div class="outline" id="session-outline">
+          <p class="sb-empty">还没有提问</p>
+        </div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">历史对话
+          <button class="link-btn" id="btn-refresh-sessions" title="重新读取对话列表">刷新</button>
+        </div>
+        <div class="sb-search">
+          <svg class="sb-search-ico" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16.5 16.5 21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <input type="text" id="session-search" placeholder="搜索对话内容" autocomplete="off" spellcheck="false" aria-label="搜索历史对话">
+          <button class="sb-search-clear" id="btn-search-clear" title="清空搜索（Esc）" aria-label="清空搜索" hidden>&times;</button>
+        </div>
+        <div class="sessions" id="session-list"><p class="sb-empty">还没有历史对话</p></div>
+      </div>
+    </nav>
+
+    <div class="sb-foot">
+      <button class="sb-item" id="btn-settings">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+        <span>设置</span>
+      </button>
+      <div class="sb-meta" id="sb-meta">—</div>
+    </div>
+  </aside>
+
+  <!-- ================= 主区 ================= -->
+  <div id="main">
+    <header id="topbar">
+      <button class="icon-btn" id="btn-sidebar-open" title="展开侧栏（Ctrl+B）" aria-label="展开侧栏">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+      <div class="model-pill" id="model-pill">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="chip-model">…</span>
+      </div>
+      <div class="chips">
+        <span class="chip" id="chip-think"></span>
+        <span class="chip" id="chip-ctx"></span>
+        <span class="chip ws" id="chip-ws"></span>
+      </div>
+    </header>
+
+    <main id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-logo">◎</div>
+        <h2>今天想让我做点什么？</h2>
+        <p class="welcome-sub">本地模型 + 全套工具：读写文件、跑命令、渲染表格、联网检索</p>
+        <div class="suggestions">
+          <button class="sugg">看一下工作空间里有什么文件</button>
+          <button class="sugg">读一下 README.md，总结要点</button>
+          <button class="sugg">把这个 Excel 渲染成截图</button>
+          <button class="sugg">截图后按 Alt+V，再问「这张图写了什么」</button>
+        </div>
+      </div>
+    </main>
+
+    <footer id="composer-wrap">
+      <div class="attach-row" id="attachments"></div>
+      <div class="composer-shell">
+        <div id="palette" class="palette hidden"></div>
+        <div class="composer">
+          <textarea id="input" rows="1" placeholder="输入消息，Enter 发送 · Shift+Enter 换行 · / 技能 · @ 文件"></textarea>
+          <div class="composer-bar">
+            <div class="composer-tools">
+              <button class="icon-btn" id="btn-file" title="上传文件（也可拖拽）" aria-label="上传文件">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l8-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button class="icon-btn" id="btn-clip" title="读取剪贴板（截图 / 文件）" aria-label="读取剪贴板">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="8" y="4" width="8" height="3.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 6H6.5A1.5 1.5 0 0 0 5 7.5v11A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 17.5 6H16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </button>
+              <span class="hint-inline">Alt+V 贴剪贴板</span>
+            </div>
+            <button class="send-btn" id="btn-send" title="发送（Enter）" aria-label="发送">
+              <svg class="ico-send" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span class="send-label">发送</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="hints">Enter 发送 · Shift+Enter 换行 · 生成中按钮变「停止」可打断</div>
+      <input type="file" id="file-input" multiple hidden>
+    </footer>
+  </div>
+</div>
+
+<!-- ================= 设置抽屉 ================= -->
+<aside id="settings" class="drawer hidden">
+  <div class="drawer-head">
+    <h3>设置</h3>
+    <button class="icon-btn" id="btn-close-settings" aria-label="关闭">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body">
+    <label class="field">模型
+      <select id="set-model"></select>
+    </label>
+    <label class="field">思考模式（默认关）
+      <select id="set-think">
+        <option value="off">off — 不思考（think=false）</option>
+        <option value="on">on — 思考</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="max">max</option>
+        <option value="auto">auto — 不传 think 字段</option>
+      </select>
+    </label>
+    <label class="field">num_ctx（改值会触发模型重载）
+      <input type="number" id="set-ctx" step="1024" min="0" placeholder="0 = 服务端默认">
+    </label>
+    <label class="field">temperature
+      <input type="number" id="set-temp" step="0.1" min="0" max="2">
+    </label>
+    <label class="field">单回合最大工具步数
+      <input type="number" id="set-steps" step="1" min="1" max="50">
+    </label>
+    <label class="field">执行前人工确认（写/删/联网工具）
+      <select id="set-confirm">
+        <option value="on">开 — 弹窗确认后才执行（推荐）</option>
+        <option value="off">关 — 直接执行（本地可信场景）</option>
+      </select>
+    </label>
+    <label class="field">工作空间目录（相对路径的根）
+      <input type="text" id="set-ws" placeholder="例如 D:/docs">
+    </label>
+    <p class="drawer-note">工作空间变更会新开一条对话（旧对话仍在历史列表里）。工具写文件前可在工具卡片里看到完整参数。</p>
+    <div class="drawer-sec">
+      <div class="sb-title">工作空间文件
+        <button class="link-btn" id="btn-refresh-files" title="重新扫描">刷新</button>
+      </div>
+      <div class="ws-files" id="ws-files"><p class="sb-empty">加载中…</p></div>
+    </div>
+  </div>
+  <div class="drawer-actions">
+    <button class="primary" id="btn-apply">应用</button>
+    <button class="ghost" id="btn-refresh-models">刷新模型列表</button>
+  </div>
+</aside>
+
+<div id="toasts" role="status" aria-live="polite"></div>
+<div id="sb-scrim" class="hidden"></div>
+
+<!-- ================= 执行确认 ================= -->
+<div id="confirm-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>确认执行</h3>
+    <p class="modal-q" id="confirm-q"></p>
+    <div class="modal-actions">
+      <button class="primary" id="btn-confirm-yes">允许</button>
+      <button class="ghost" id="btn-confirm-all">本回合全部允许</button>
+      <button class="danger" id="btn-confirm-no">拒绝</button>
+    </div>
+    <p class="modal-note">超过 5 分钟未确认将自动拒绝。删除/写入不可恢复，看清参数再放行。</p>
+  </div>
+</div>
+
+<!-- ================= 二次确认（清空 / 删除对话） ================= -->
+<div id="yesno-modal" class="modal hidden">
+  <div class="modal-box yn-box">
+    <h3 id="yn-title">确认</h3>
+    <p class="yn-body" id="yn-body"></p>
+    <div class="modal-actions">
+      <button class="danger" id="yn-ok">确定</button>
+      <button class="ghost" id="yn-cancel">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 文件预览 ================= -->
+<div id="preview-modal" class="modal hidden">
+  <div class="preview-box">
+    <div class="preview-head">
+      <div class="preview-title">
+        <span class="pv-icon" id="pv-icon">📄</span>
+        <div class="pv-name-wrap">
+          <span class="pv-name" id="pv-name">文件</span>
+          <span class="pv-meta" id="pv-meta"></span>
+        </div>
+      </div>
+      <div class="preview-actions">
+        <button class="ghost sm" id="pv-copy" hidden>复制内容</button>
+        <button class="ghost sm" id="pv-download">下载</button>
+        <button class="icon-btn" id="pv-close" aria-label="关闭预览">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="preview-body" id="pv-body"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

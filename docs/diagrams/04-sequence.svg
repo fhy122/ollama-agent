@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 476" width="100%" role="img">
+<title>一次对话的运行时序</title>
+<desc>从用户输入到最终输出的调用顺序：入口接收、run_turn 编排、client 请求 Ollama、工具执行、事件输出。</desc>
+<defs>
+<marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="680" height="476" fill="#FFFFFF"/>
+
+<rect x="39" y="36" width="92" height="34" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="85" y="53" font-family="system-ui, sans-serif" font-size="12" font-weight="500" fill="#633806" text-anchor="middle" dominant-baseline="central">用户 / 前端</text>
+
+<rect x="139" y="36" width="92" height="34" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="185" y="53" font-family="system-ui, sans-serif" font-size="12" font-weight="500" fill="#3C3489" text-anchor="middle" dominant-baseline="central">cli │ session</text>
+
+<rect x="239" y="36" width="92" height="34" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="285" y="53" font-family="system-ui, sans-serif" font-size="12" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">run_turn</text>
+
+<rect x="339" y="36" width="92" height="34" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="385" y="53" font-family="system-ui, sans-serif" font-size="12" font-weight="500" fill="#173404" text-anchor="middle" dominant-baseline="central">tools/*</text>
+
+<rect x="439" y="36" width="92" height="34" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="485" y="53" font-family="system-ui, sans-serif" font-size="12" font-weight="500" fill="#085041" text-anchor="middle" dominant-baseline="central">client.chat</text>
+
+<rect x="539" y="36" width="92" height="34" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="585" y="53" font-family="system-ui, sans-serif" font-size="12" font-weight="500" fill="#444441" text-anchor="middle" dominant-baseline="central">Ollama</text>
+
+<path d="M85 70 L85 412" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 4"/>
+<path d="M185 70 L185 412" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 4"/>
+<path d="M285 70 L285 412" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 4"/>
+<path d="M385 70 L385 412" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 4"/>
+<path d="M485 70 L485 412" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 4"/>
+<path d="M585 70 L585 412" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 4"/>
+
+<text x="135" y="88" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">消息 + 附件</text>
+<path d="M85 96 L183 96" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<text x="235" y="122" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">run_turn(...)</text>
+<path d="M185 130 L283 130" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<rect x="325" y="148" width="120" height="16" fill="#FFFFFF"/>
+<text x="385" y="156" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">chat(history, tools)</text>
+<path d="M285 164 L483 164" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<text x="535" y="190" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">POST /api/chat</text>
+<path d="M485 198 L583 198" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<text x="535" y="224" font-family="system-ui, sans-serif" font-size="11" fill="#888780" text-anchor="middle" dominant-baseline="central">逐行 JSON</text>
+<path d="M585 232 L487 232" fill="none" stroke="#B4B2A9" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<rect x="352" y="250" width="66" height="16" fill="#FFFFFF"/>
+<text x="385" y="258" font-family="system-ui, sans-serif" font-size="11" fill="#888780" text-anchor="middle" dominant-baseline="central">tool_calls</text>
+<path d="M485 266 L287 266" fill="none" stroke="#B4B2A9" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<text x="335" y="292" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">dispatch</text>
+<path d="M285 300 L383 300" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<text x="335" y="326" font-family="system-ui, sans-serif" font-size="11" fill="#888780" text-anchor="middle" dominant-baseline="central">ToolResult</text>
+<path d="M385 334 L287 334" fill="none" stroke="#B4B2A9" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<text x="235" y="360" font-family="system-ui, sans-serif" font-size="11" fill="#888780" text-anchor="middle" dominant-baseline="central">emitter 事件</text>
+<path d="M285 368 L187 368" fill="none" stroke="#B4B2A9" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<text x="135" y="394" font-family="system-ui, sans-serif" font-size="11" fill="#888780" text-anchor="middle" dominant-baseline="central">刷字 / 渲染</text>
+<path d="M185 402 L87 402" fill="none" stroke="#B4B2A9" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<text x="340" y="436" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">有 tool_calls 就回到 chat 继续下一轮（≤ max_steps 12 步），没有才结束回合</text>
+<text x="340" y="456" font-family="system-ui, sans-serif" font-size="11" fill="#888780" text-anchor="middle" dominant-baseline="central">confirm=True 的工具：emitter.confirm → 前端弹窗 → POST /api/confirm → ConfirmGate（300s 超时=拒绝）</text>
+</svg>

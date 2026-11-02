@@ -1,0 +1,541 @@
+# Ollama Agent — 本地小模型工具调用代理
+
+一个为**本地 Ollama 小模型**（如 `qwen3.5:9b`）设计的极简 Agent：
+工具调用（function calling）+ **默认关闭思考（think=false）** + 文件读写 + 图片理解 + 联网搜索/读网页。
+
+> 为什么自己做：市面上的 Agent 框架对本地小模型不友好——要么太慢、要么吃 context。
+> 这个项目核心诉求就两条：**能选 think=false**（省时间省 token），**context 可控**（默认 32768）。
+
+## 环境要求
+
+| 依赖 | 说明 |
+|---|---|
+| Python 3.10+ | Ollama 通信走标准库 urllib |
+| openpyxl / python-docx | Excel / Word 读写（`pip install -r requirements.txt`） |
+| [Ollama](https://ollama.com) | 本地服务运行在 `http://localhost:11434` |
+| 带 tools 能力的模型 | 如 `qwen3.5:9b`（capabilities 需含 `tools`） |
+| Playwright（可选） | 仅 `browse_url` / `web_search` 兜底需要 |
+
+```bash
+# 基础依赖（Office 读写）
+pip install -r requirements.txt
+
+# 可选依赖（要用联网/读网页才装）
+pip install playwright
+playwright install chromium
+
+# 拉模型（示例）
+ollama pull qwen3.5:9b
+```
+
+## 快速开始
+
+```bash
+# 图形界面（推荐）：浏览器聊天界面，流式输出 + 工具卡片 + 设置面板
+python -m webui                # 打开 http://127.0.0.1:8888/
+python ollama_agent.py --ui    # 等价
+
+# 交互模式（think 默认关、自动预热模型）
+python ollama_agent.py
+
+# 单次执行
+python ollama_agent.py -p "看看当前目录有什么，然后读一下 README.md"
+
+# 指定工作空间（相对路径读写的根）
+python ollama_agent.py -w D:/docs -p "读一下 周报.docx"
+
+# 也可以用模块方式启动（等价）
+python -m agent -p "..."
+```
+
+首次运行会预热模型（加载进内存/显存，你这卡可能要几十秒到几分钟），**之后同一会话内秒级响应**。
+
+> **快捷启动**：根目录的 `ollama_agent.bat` 已默认带 `--ui`，且本目录已加入用户 `PATH`——任意目录下直接敲
+> `ollama_agent` 就打开 Web UI（工作空间 = 你当前所在目录）。`ollama_agent -p "问题"` 走单次执行，
+> `ollama_agent --help` 看全部参数，`ollama_agent --port 9000` 会自动补上 `--ui`。新加的 `PATH` 只对新开终端生效。
+>
+> 启动前会先探一下 `http://127.0.0.1:11434`：没响应就自动拉起 Ollama（优先桌面版 `ollama app.exe`，
+> 没有则 `start /min ollama serve`），最多等 40 秒再进 UI。`--help` / `--version` 不碰服务端。
+>
+> 服务就绪后**会先预热模型**（把权重加载进显存/内存），终端打印 `模型就绪（72.7s）` 之后浏览器才打开，
+> 第一句话不用再干等。冷启动在这台机器上约 73 秒；`--no-warm` 可跳过，Ctrl+C 也能跳过。
+
+## Web UI（图形界面）
+
+不想敲命令就用它——`python -m webui` 启动后自动打开浏览器：
+
+```bash
+python -m webui                      # 默认 127.0.0.1:8888，只监听本机
+python -m webui --port 9000          # 换端口
+python -m webui -w D:/docs           # 指定工作空间
+python -m webui --no-hotkey          # 不注册全局热键
+python -m webui --no-browser         # 不自动开浏览器（远程/二次刷新用）
+python -m webui --no-warm            # 启动时不预热模型（默认会先加载进显存）
+python ollama_agent.py --ui          # 同上（--port 同样可用）
+```
+
+**界面能力：**
+
+| 能力 | 用法 |
+|---|---|
+| 流式对话 | 打字 → Enter 发送（Shift+Enter 换行）；回答逐字流出，工具调用显示为可展开卡片（参数 + 结果 + 耗时） |
+| 左侧栏 | 「+ 新对话」、本次会话提问大纲（点击跳转）、**历史对话列表**（点击切换、悬停 × 删除、当前高亮）；窄屏自动变抽屉 + 遮罩 |
+| 历史对话 | 每条对话独立存档（标题取第一句提问），关掉浏览器/重启服务后仍在；启动自动接上最近一条，点列表任意一条即回放当时的提问、回答、工具卡片与代码块 |
+| 对话搜索 | 侧栏搜索框 `Ctrl/⌘+K` 聚焦，输入即搜（220ms 防抖）。搜的是**对话正文**——提问、回答、思考过程、工具参数与结果都能命中，结果行给出命中位置标签 + 上下文片段并高亮关键词；空格分隔多个词表示「同时包含」；Esc 清空 |
+| 清空 / 删除 | 侧栏「本次会话」标题旁的「清空」只清当前这一条（弹确认并写明「另外 N 条不受影响」）；历史列表里每条悬停出 × 删除。两者都会连存档一起删掉，无法恢复 |
+| 一键复制 | 每条回答下方「复制」（复制整段 Markdown），代码块右上「复制 / 换行 / 放大」 |
+| 代码卡片 | 带语言标签与操作按钮，长代码可「放大」进大窗口再看，也可直接下载为文件 |
+| 文件预览 | 工具生成/引用的文件显示为文件卡片，点「预览」直接看内容：文本/代码高亮底色、Markdown 渲染、**xlsx/csv 转表格**、图片内嵌；可一键下载 |
+| 图片查看 | 任意图片（用户附图 / 工具截图 / Markdown 图片）点开放大，支持切换原始尺寸、下载，Esc 或点击关闭 |
+| 表格渲染 | 模型输出的 Markdown 表格自动渲染成真表格（对齐、斑马纹、窄屏横向滚动） |
+| 思考过程 | think 开启时收进「思考过程」折叠块，不打扰阅读 |
+| 贴截图 | `Ctrl+V` 直接贴剪贴板截图（多张可连续贴） |
+| 系统剪贴板 | 点附件按钮或页面内 `Alt+V`：截图 → 附件；Explorer 里 Ctrl+C 的文件 → 路径附件 |
+| 全局 Alt+V | 热键在任何窗口都生效，剪贴板内容自动飞进对话附件栏（前端轮询取走） |
+| 拖拽上传 | 文件拖进窗口：图片直接附上（视觉），其它文件存到 `{工作空间}/.uploads/` 并附路径 |
+| `/` 面板 | 输入框敲 `/` 弹命令面板：**指令**（reset/think）+ **技能**（技能库），↑↓ 选择、Enter 确认、Esc 关闭，支持继续输入过滤 |
+| `@` 上下文 | 输入框敲 `@` 弹文件面板：模糊搜索工作空间文件，选中即附到下一条消息当上下文 |
+| 打断生成 | 生成中右下角按钮变红色「停止」，点了立即停（含工具循环、等确认的回合）；关页面也会自动停 |
+| 设置面板 | 「设置」：换模型（下拉列出本地已装）、think 模式、num_ctx、temperature、工作空间、**执行前确认** |
+| 执行确认 | 写/改/删/联网/命令执行工具（`confirm=True`）执行前弹确认框：**允许 / 本回合全部允许 / 拒绝**；默认开启，5 分钟未确认自动拒绝（fail-safe） |
+
+**预览接口：** `GET /api/file?path=…`（JSON 预览数据）、`?raw=1`（下载）。只允许工作空间内的路径，
+跨目录访问返回 403；文本上限 400KB，表格取前 200 行 × 30 列。
+
+**会话接口：** `GET /api/sessions`（列表 + 当前会话）、`POST /api/sessions/new|open|delete`、
+`GET /api/sessions/search?q=关键词`（全文搜索，返回 `field` 命中位置 + `snippet` 片段；多词 AND、大小写不敏感；空查询返回空列表而不是全量）。
+正在生成时切换/新建/删除返回 409，先点「停止」再操作。
+
+**会话存在哪：** 一条对话一个 JSON，默认 `~/.ollama-agent/sessions/<id>.json`（`OLLAMA_AGENT_SESSIONS`
+可改目录，测试靠它隔离）。文件里同时存两份东西：`history` 是喂给模型的完整上下文，`turns` 是
+界面回放用的流式事件（文字 / 思考 / 工具调用 / 工具结果 / 用量），所以切回旧对话能原样还原
+工具卡片和代码块，不是只剩纯文本。工作空间文件列表移到了设置面板底部（点击仍可预览）。
+没有任何提问的空会话不列进历史；工作空间换了会新开一条对话，旧对话照样留在列表里。
+
+**注意：** 设置面板里改工作空间会新开一条对话（旧对话仍在历史列表）；改 num_ctx 会触发模型重载。
+UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**——写/改/删文件、跑命令、联网类工具（`confirm=True`）会先弹窗要人点头，防止模型自作主张；本地可信场景可在设置面板关掉。
+
+## 命令行参数
+
+```
+--host        Ollama 地址，默认 http://localhost:11434
+--model       模型名，默认 qwen3.5:9b
+--think       off|on|low|medium|high|max|auto   默认 off（= think:false）
+              auto = 不传 think 字段（兼容不支持思考的模型）
+--ctx         num_ctx，默认 32768；0 = 用 Ollama 服务端默认
+              ⚠️ 改 ctx 会触发模型重载，一个会话内别随便改
+--temp        temperature，默认 0.7
+--img <路径>  给第一条消息附图片，可多次
+-p, --prompt  单次执行（非交互），跑完即退
+-w, --workspace  工作空间目录：相对路径读写的根，默认当前目录
+--max-steps   单回合最大工具步数，默认 12
+--no-tools    禁用全部工具，纯聊天
+--confirm     写/改/删文件、跑命令、联网前需要人工确认（y/N）
+--no-color    关闭彩色输出
+--hide-think  开思考时也不打印思考过程
+--no-warm     跳过交互模式的模型预热
+--no-palette  关闭 / 与 @ 的行内选择面板（回退为普通输入）
+--no-hotkey   不注册全局热键 Alt+V（剪贴板进对话）
+--ui          直接启动 Web UI（等价 python -m webui）
+--port        Web UI 端口，默认 8888
+```
+
+### think 模式说明
+
+| 值 | 行为 |
+|---|---|
+| `off`（默认） | 传 `think=false`，不思考直接答，**最快** |
+| `on` | 传 `think=true`，完整思考 |
+| `low` / `medium` / `high` / `max` | 传对应思考深度（需模型支持） |
+| `auto` | 不传 think 字段，由模型自己决定 |
+
+## 交互模式命令
+
+启动后直接打字对话，模型会自动调工具。
+
+### `/` 调用技能与指令 · `@` 添加上下文（行内面板）
+
+敲 `/` 或 `@` 就在输入行下方弹出候选清单，**↑↓ 移动、Enter 确认、Esc 关闭**，
+继续打字即按前缀过滤（文件与前缀严格过滤；指令按前缀过滤；技能只排序不淘汰，与 WebUI 面板同语义）：
+
+```
+你> /
+  指令
+▸ /img  — 附图片 <路径>
+  /paste  — 剪贴板进对话
+  /think  — 思考模式 <off|on|low|medium|high|max|auto>
+  /model  — 切换模型 <名>
+  /ctx  — 设置 num_ctx <整数>
+  /ws  — 查看/切换工作空间 [目录]
+  /reset  — 清空对话历史
+  /tools  — 列出已注册工具
+  /skill  — 加载技能 <名称> [问题]
+  /save  — 保存对话 <文件>
+  … 还有 10 项（继续输入可过滤，↑↓ 可滚动）
+  ↑↓ 选择 · Enter 确认 · Esc 关闭
+
+你> /ui
+  技能
+▸ ui-design-system  — 专业UI生成与现有界面优化技能。当用户请求生成UI界面、设计页…
+  其它技能
+  brand-identity-design  — 从品牌策略到生产级交付资产的完整标识设计，含概念生…
+  ↑↓ 选择 · Enter 确认 · Esc 关闭
+
+你> /skill
+  指令
+▸ /skill  — 加载技能 <名称> [问题]
+  技能
+  skill-icon-generator  — 为技能、专家或项目生成简洁的 512×512 图标：方形 PNG…
+  其它技能
+  …（其余技能照常列出，↑↓ 可滚动）
+  ↑↓ 选择 · Enter 确认 · Esc 关闭
+
+你> 总结 @rep
+▸ report.md
+  report2.md
+  ↑↓ 选择 · Enter 确认 · Esc 关闭
+
+你>            ← @ 选中后：常驻这一行，随时知道带了什么
+  ✓ 已附加：report.md（待发 1 个 · 再 @ 选中可取消）
+```
+
+> 一屏最多显示 10 条（以当前选中项居中滚动），分组标题与底部提示不占名额；
+> 超宽行按显示宽度截断（中文算 2 列），防止折行把重绘搞错位。
+
+- `/` → 指令 + 技能库；选中指令回填 `/reset `，选中技能回填 `/skill <原始名> `，接着写问题即可一次发。
+- `/skill ` → **二级补全**：打完 `/skill` 空格后继续列技能候选（继续打字按名过滤），选中回填 `/skill <名> `；
+  名字写完再打空格即收起面板，接着写问题。
+- 技能**不会被过滤淘汰**：「技能」组是命中的（排前面），其余归「其它技能」组照常列出，方便按名字浏览挑选。
+- `@` → 工作空间文件（**前缀匹配**：`@rep` 只剩 report 系）；选中后 `@token` 自动从输入行摘除，
+  文件挂到下一条消息（图片进视觉，其它附路径让模型读）。
+- **回车的语义**：面板开着就选中当前项（第一个候选也能直接选上）；已打全名（`/reset`、`@readme.md`）回车 = 立刻执行/发送；
+  光打 `/` 回车 = 列指令清单（浏览）。Esc 关掉面板后回车按原文发送。
+- **已附加反馈**：选中后输入行下方常驻一行 `✓ 已附加 2 个：[1] a.docx  [2] b.xlsx`，带编号、实时更新；
+  **输入行为空时按退格 = 逐个移除附件**（像删字符一样往回删，不用再敲 @ 找文件）；删中间某个时再敲 `@`，
+  已附文件带 `✓` 排在列表末尾，回车即取消。
+- **不会误发**：有待发附件时直接回车只提示「接着写你的问题」，不再替你发一条空消息。
+
+斜杠命令全表：
+
+```
+/                 列出指令 + 技能库一览
+/img <路径>       给下一条消息附图片（可连续多次）
+/paste            把剪贴板内容附到下一条消息（截图→图；Ctrl+C 文件→路径）；Alt+V 同效果
+/think <模式>     运行中切换思考模式
+/model <模型名>   切换模型
+/ctx <整数>       设置 num_ctx（0 = 服务端默认；改值触发重载）
+/ws [目录]        查看 / 切换工作空间
+/reset            清空对话历史
+/tools            列出已注册工具
+/skill <名称> [问题]  加载技能进对话；带问题则注入后直接让模型答题
+/<技能名> [问题]  快捷调用技能（如 /ui-design-system 设计一个设置页）
+/save <文件>      保存对话历史为 JSON
+/load <文件>      读入对话历史
+/help             帮助
+/exit             退出
+```
+
+### 打断正在生成的回答（Ctrl+C）
+
+生成过程中按一次 `Ctrl+C` = **只停本轮，不退程序**：断开流式连接（Ollama 随即停止生成）、
+已生成的部分留在对话历史里（标记「已被用户打断」），回到 `你>` 提示符可以直接接着问，
+上下文不丢。
+
+| 按 Ctrl+C 的时机 | 效果 |
+|---|---|
+| 模型正在输出文字 | 停输出，部分回答入历史，回提示符 |
+| 工具执行到一半（如长命令） | 停工具，未执行的 tool_calls 补「已被用户打断，未执行」占位，历史保持合法 |
+| 等待工具确认弹窗（`? 允许执行…`） | 取消本次运算，回提示符 |
+| 提示符处（没在生成） | 退出程序（等同 `/exit`） |
+| `-p` 单次模式 | 中断并返回退出码 130 |
+
+与 WebUI 的「■ 停止」走同一套取消逻辑（`run_turn(cancel=)` / `client.chat(cancel=)`），
+行为一致；WebUI 里关页面或点停止也会同样干净收尾。
+
+### @ 添加上下文（CLI 与 WebUI 同语义）
+
+敲 `@` 会先弹候选面板（见上），选中的文件挂到下一条消息；也可以直接在消息里手写 `@名称`，
+发送时做模糊匹配并把工作空间文件附进对话：
+
+```
+你> 总结 @report 的要点        ← report.md 唯一命中：自动附上（正文里的 @report 换成相对路径）
+你> 对比 @report               ← 多个命中（report.md / report2.md）：列出来选编号
+你> 看 @截图.png 讲了什么       ← 图片直接进视觉
+你> @报告.docx                 ← 整条消息只有 @引用：附上后按"看一下我附带的内容"发出
+你> @                          ← 单独一个 @ 回车：选中第一个文件（面板里看得见清单，↑↓ 挑）
+```
+
+细节：`@报告的要点` 这类中文紧邻写法会自动裁掉尾部中文再匹配（→ `报告.md`）；`foo@bar.com` 这类邮箱不会误伤；同一文件 @ 多次只附一次；`.git`/`.workbuddy` 等目录跳过；没命中原样保留并提示。单次模式 `-p` 同样支持。
+
+面板需要 Windows 控制台且支持 ANSI 光标控制（Windows Terminal / Win10+ conhost 均可）；
+控制台不支持时启动会提示并自动回退普通输入，也可显式 `--no-palette` 关闭；
+管道/重定向（非 TTY）环境自动走普通 `input()`，不影响脚本调用。
+
+### 使用示例
+
+```
+你> 截图后 /paste
+已附加剪贴板截图 → 缓存 .clip_cache\clip_20261101_122307.png（待发 1 张）
+你> 这张图写了什么？
+你> 把上面的内容整理成 notes.md
+你> 读一下 周报.docx 和 销量.xlsx，各总结一句
+你> 我刚截图了，看看剪贴板里那张图是什么        ← 不用 /paste，模型自己调工具
+你> 用 web_search 搜一下 Ollama think 参数怎么用，总结给我
+```
+
+## 工作空间
+
+所有文件类工具（读/写/列目录/图片）遵守同一套路径规则：
+
+| 你写的路径 | 实际位置 |
+|---|---|
+| `notes/hello.md`、`周报.docx`（相对路径） | `{工作空间}/notes/hello.md` |
+| 不传 path（list_dir） | 工作空间根目录 |
+| `D:/docs/a.txt`、`~/x.png`（绝对路径 / `~`） | 按原样，可超出工作空间 |
+
+- 默认工作空间 = 启动时的当前目录；`-w DIR` / `--workspace DIR` 指定
+- 交互中 `/ws` 查看、`/ws 新目录` 切换（会重置对话历史，让模型知道新根）
+- 系统提示词会告诉模型当前工作空间在哪，所以直接说"读一下 周报.docx"它就能找对
+
+## 内置工具（15 个）
+
+| 工具 | 功能 | 备注 |
+|---|---|---|
+| `read_file` | 读本地文件：**文本 / Word / Excel / PPT** | 见下方格式支持 |
+| `write_file` | 写本地文件：**文本 / Word / Excel**（按扩展名生成真格式） | 见下方格式支持；`--confirm` 可把关 |
+| `edit_file` | **精确替换文件片段**（old_string→new_string，外科手术式） | 默认要求唯一；`--confirm` 可把关 |
+| `delete_file` | 删除文件/目录（破坏性，不可恢复） | 工作空间外拒绝 |
+| `list_dir` | 列目录（大小、子目录） | 默认列工作空间 |
+| `run_command` | **执行 shell 命令**：测试/git/装依赖/lint/编译 | git 直接用命令即可；`--confirm` 可把关 |
+| `grep_file` | **搜文件内容**（正则，`文件:行号: 命中行`） | 跳过 .git/node_modules 等噪声目录 |
+| `glob_file` | **按文件名模式找文件**（`*.py`、`src/**/*.ts`） | 不含 / 的模式任意子目录递归匹配 |
+| `load_image` | 加载图片文件 → base64 喂给视觉模型（**仅图片**，文档会被拒） | 需模型支持 vision |
+| `render_sheet` | **表格渲染成图片**（xlsx/xlsm/csv/tsv → PNG 截图） | 「看看表格做得对不对/长什么样」用它，比 read_file 更直观 |
+| `clipboard_image` | **读剪贴板**：截图→图；Ctrl+C 文件→路径 | Alt+V / /paste 同源，见下 |
+| `browse_url` | Playwright 打开网页提取正文 | 读文章/文档/链接 |
+| `web_search` | 联网搜索：**双引擎并行**（Bing 结果 + 百度AI摘要/结果） | 摘要够用可免 browse |
+| `skill` | **按需加载技能指令**（SKILL.md 工作流文档） | 见下方技能说明 |
+
+### 写代码闭环（run_command / grep_file / glob_file / edit_file）
+
+四个工具补齐后，「搜到 → 读 → 改 → 跑测试 → 看报错 → 再改」的最小闭环成型：
+
+```python
+grep_file(pattern="def run_turn")            # 内容定位：谁定义/谁调用
+glob_file(pattern="tests/**/*.py")           # 文件名定位：有哪些测试
+read_file(path="agent/loop.py", offset=1)    # 读懂上下文
+edit_file(path="agent/loop.py",              # 精确替换，不整文件重写
+          old_string="旧代码（与原文完全一致且唯一）", new_string="新代码")
+run_command(command="python tests/test_tools.py")   # 跑测试验证
+```
+
+要点：
+
+- **edit_file**：`old_string` 必须与文件内容完全一致（可直接抄 `read_file` 输出，换行已自动归一化），
+  且默认**只允许出现 1 次**——不唯一会拒绝，扩上下文或传 `replace_all=true`。新建文件/整文件重写仍用 `write_file`
+- **run_command**：工作目录默认工作空间（`cwd` 可改）；默认 120s 超时（`timeout` 可调，上限 600）；
+  stdin 不可用，交互式命令会卡到超时；Windows=cmd / Linux·Mac=sh 语法
+- **grep_file / glob_file**：跳过 `.git`/`node_modules`/`__pycache__` 等噪声目录和二进制文件；
+  `glob`/`pattern` 不含 `/` 时任意子目录递归匹配（`*.py` = 全工程 py 文件）
+- **安全**：`edit_file`/`run_command` 均 `confirm=True`，CLI `--confirm` / Web 确认弹窗人工把关；
+  破坏性命令（删数据、`git push --force`）系统提示词要求只在用户明确要求时执行
+
+### delete_file 说明（破坏性，不可恢复）
+
+```python
+delete_file(path="tmp.log")                  # 删文件 / 空目录
+delete_file(path="build", recursive=True)    # 删非空目录（必须显式 recursive=true）
+```
+
+安全设计（删错无法找回，所以门槛比 write_file 高）：
+
+1. **工作空间外一律拒绝**（read/write 允许绝对路径出工作空间，delete 不允许）；工作空间根目录也拒绝
+2. **非空目录必须 `recursive=true`**：不传时拒绝并列出顶层内容（数量/大小/名称），方便先跟用户核对
+3. **人工把关**：CLI 加 `--confirm` 后删除前弹 y/N 确认（和 write_file/联网同机制）；Web UI 默认弹网页确认框
+
+### 技能（skill）
+
+技能 = 一份 Markdown 工作流指令（SKILL.md，与 WorkBuddy 技能同格式）。机制：
+
+- **索引常驻**：启动/新会话时把「技能名 + 一句话描述」注入系统提示词（几十 token）；
+- **正文按需**：任务命中某技能主题时模型调 `skill(name="…")` 加载全文，避免撑爆 32K 上下文；
+- **扫描目录**（同名先者胜）：`{工作空间}/.workbuddy/skills/`（工作空间级）→ `~/.workbuddy/skills/`（用户级）→ `~/.workbuddy/user-*-personal/skills/`（账号级）；
+- 加载时附**工具名映射提示**（Read→read_file、Edit→edit_file、Bash/Shell→run_command、Grep→grep_file、Glob→glob_file 等，防模型照抄技能里的 WorkBuddy 工具名；Task/子代理没有，改为连续调用工具）；
+- 超长正文默认截 20000 字符（`max_chars` 可调），截断时提示用 `read_file` 续读。
+
+```python
+skill()                          # 列出全部技能
+skill(name="ui-design-system")   # 加载该技能指令全文
+```
+
+对话里也可直接发命令：CLI 用 `/skill <名称> [问题]` 或快捷的 `/<技能名> [问题]`；WebUI 敲 `/` 从面板选（或手输 `/skill <名称> [问题]`）。带问题都会先注入技能再让模型答题。
+
+注意：技能是给模型看的指令文档，动辄上万 token——大技能（如 dev-expert 65KB）对小模型负担重，摘用为宜。
+
+### 剪贴板截图 / 文件（Alt+V、/paste、clipboard_image）
+
+截图（Win+Shift+S、QQ/微信截图等）通常只进剪贴板、没有文件；Explorer 里 Ctrl+C 的文件也在剪贴板——**Alt+V 全局热键**一键带进对话：
+
+| 剪贴板里是 | Alt+V 之后 | 效果 |
+|---|---|---|
+| 截图 / 图片位图 | 图挂到下一条消息（缓存到 `.clip_cache/`） | 模型直接"看"到 |
+| Ctrl+C 的文件（可多选） | 文件路径注入下一条消息 | 模型自己 `read_file` / `load_image` 读 |
+| 都没有 | 提示"剪贴板里没有图片或文件" | 不装死 |
+
+- **Alt+V**：全局热键（任何时候按，不需要先点终端），等价于敲 `/paste`
+- 也可以直接说"看剪贴板里那张图 / 那个文件"，模型自己调 `clipboard_image` 工具
+- `save_as="shots/a.png"` 可把截图顺手另存；缓存目录 `.clip_cache/` 可随时整个删掉
+- `--no-hotkey` 关闭热键；热键被其它程序占用时启动会提示、`/paste` 仍可用
+
+> 实现：ctypes 直调 Win32（RegisterHotKey 热键 + CF_DIB/CF_PNG/CF_HDROP 剪贴板）+ 标准库 zlib 写 PNG。
+> 仅支持 Windows；`.clip_cache` 里是标准 PNG，任何看图软件都能打开。
+
+### read_file / write_file 格式支持
+
+| 格式 | 扩展名 | read_file 输出 | write_file 输入 |
+|---|---|---|---|
+| 文本 | `.txt` `.md` `.csv` `.json` 代码/配置等 | 按行号分页（`offset`/`limit` 翻页） | 原样写文本 |
+| Word | `.docx` | 按段落抽文本 | Markdown 子集（`#` 标题、`-`/`1.` 列表、`\| 表格 \|`、`**加粗**`、`` `代码` ``）→ 真 docx |
+| Excel | `.xlsx` `.xlsm` | 按工作表输出单元格（表名 + 行列，共享字符串已还原） | **JSON 二维数组（推荐）** `[["列1","列2"],["值1","值2"]]` / CSV / TSV / Markdown 表格 → 真 xlsx；每行列数必须与表头一致，参差行报错回传（不静默错位）；`=== 表名 ===` 分节写多工作表 |
+| PPT | `.pptx` | 按页抽文字 | ❌ 暂不支持生成（工具会提示） |
+| 旧版 | `.doc` `.xls` `.ppt` | ❌ 请另存为新格式（工具会提示） | ❌ 拒绝写入（避免产出伪文件） |
+
+> 生成用 openpyxl（Excel）/ python-docx（Word）；解析同源库 + pptx 走 zip 抽字。Office/WPS 可直接打开产出的 docx/xlsx。
+> Excel 数字自动识别为数值单元格；带前导零（如 `007`、区号）的长数字保持文本，电话/编号不会被 Excel 吃成科学计数。
+
+### web_search 说明
+
+```python
+web_search(query="…")                    # auto/both（默认）：双引擎并行全量
+web_search(query="…", engine="baidu")    # 只走百度（AI总结+结果）
+web_search(query="…", engine="bing")     # 只走 Bing（最快，纯 HTTP 不启浏览器）
+```
+
+**默认双引擎并行**：Bing 与百度同时搜，总耗时 ≈ 单条百度（Bing 纯 HTTP 在后台线程免费搭车）。
+输出顺序：**百度 AI 聚合摘要**（多篇结果综合答案+引用来源，摘要够用直接答，省掉逐条 browse）
+→ **Bing 结果**（英文/术语类质量较高）→ **百度结果**（中文长尾补充，与 Bing 按 URL 去重）。
+
+已知引擎侧限制：**Bing 对匿名/无信任会话会随机发"降级页"**（词典/百科顶格，或结果被 query 首词
+劫持成天梯图/词条类；同一 query 时好时坏，真实登录浏览器不受影响）——代码命中降级页会**自动重试**
+（同会话 Cookie + 退避，最多 3 翻）翻到正常页；重试用尽才在结果块打降级提示，模型据此不引用垃圾。
+极少数粘性 query（如"CPU GPU 跑本地大模型谁快"这类比较问句）重试也救不回时，靠百度块兜底。
+因此：中文长尾问题主要靠百度 AI 摘要 + 百度结果，英文/技术术语靠 Bing，互补覆盖。
+
+## 如何新增工具
+
+一个工具一个文件，**导入即自动注册，不用改任何其他文件**：
+
+1. 在 `tools/` 新建 `your_tool.py`
+2. 用 `@tool(...)` 装饰处理函数
+3. 完事
+
+```python
+# tools/calculator.py
+from agent.registry import ToolContext, ToolResult, tool
+
+@tool(
+    name="calculator",
+    description="四则运算求值。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "expression": {"type": "string", "description": "算式，如 2+3*4"},
+        },
+        "required": ["expression"],
+    },
+    confirm=False,  # True 时执行前人工确认（CLI --confirm 弹 y/N；Web UI 默认弹网页确认框）
+)
+def calculator(ctx: ToolContext, expression: str) -> ToolResult:
+    try:
+        return ToolResult(str(eval(expression, {"__builtins__": {}}, {})))
+    except Exception as e:
+        return ToolResult(f"[错误] 计算失败: {e}")
+```
+
+函数约定：`def fn(ctx: ToolContext, **schema参数) -> ToolResult | str`
+- **路径参数一律 `ctx.resolve(path)`**：相对路径自动锚定工作空间（和内置工具行为一致）
+- 返回 `str` 会自动包成 `ToolResult`
+- 抛异常不会炸整个 Agent，错误会回传给模型让它自己改
+- `ToolResult(text, images=[base64...])` 可附图（视觉模型可看）
+
+写完用 `/tools` 或 `python tests/test_tools.py` 确认注册成功。
+
+## 工程结构
+
+```
+playwritetest/
+├── ollama_agent.py        # 兼容入口（薄 shim，等价 python -m agent）
+├── agent/                 # 核心层
+│   ├── config.py          #   全局配置（think、ctx、系统提示词…）
+│   ├── client.py          #   Ollama /api/chat 客户端（think 参数、tool_calls、预热）
+│   ├── registry.py        #   工具注册表（@tool 装饰器 + dispatch + 工作空间路径解析）
+│   ├── events.py          #   事件发射器抽象（控制台/HTTP 流共用主循环）
+│   ├── docparse.py        #   文档解析（docx/xlsx/pptx → 文本，openpyxl/python-docx + zip 抽字）
+│   ├── docgen.py          #   文档生成（CSV/Markdown → 真 xlsx/docx，openpyxl/python-docx）
+│   ├── clipboard.py       #   剪贴板取图/取文件（ctypes Win32 + 标准库 PNG 编码）
+│   ├── hotkeys.py         #   全局热键 Alt+V（RegisterHotKey + 消息循环线程）
+│   ├── loop.py            #   Agent 主循环（多步工具调用、历史图片剥离）
+│   ├── console.py         #   输出/着色/行缓冲
+│   ├── palette.py         #   行内选择面板（/ 指令与技能、@ 文件前缀匹配；msvcrt 读键 + ANSI 重绘）
+│   └── cli.py             #   参数解析 + 交互 REPL + --ui 入口
+├── tools/                 # 工具层——一个工具一个文件，自动发现注册
+│   ├── read_file.py / write_file.py / edit_file.py / list_dir.py / delete_file.py
+│   ├── run_command.py     #   执行 shell 命令（测试/git/装依赖，confirm 高危把关）
+│   ├── grep_file.py       #   搜文件内容（正则，文件:行号: 命中行）
+│   ├── glob_file.py       #   按文件名模式找文件（*/**/? 通配）
+│   ├── _common.py         #   共享助手（解码/截断/glob→regex/遍历，下划线不注册）
+│   ├── load_image.py      #   图片 base64 喂给视觉模型
+│   ├── clipboard_image.py #   剪贴板截图 → 缓存 → 喂给视觉模型
+│   ├── browse_url.py      #   Playwright 读网页
+│   ├── web_search.py      #   联网搜索（双引擎并行：Bing + 百度AI总结/结果）
+│   └── skill.py           #   技能按需加载（SKILL.md 索引入系统提示词，正文按需读）
+├── webui/                 # Web UI 层（python -m webui）
+│   ├── server.py          #   HTTP 服务（静态页 + JSON API + NDJSON 流，只绑 127.0.0.1）
+│   ├── session.py         #   会话状态（配置热更新、剪贴板暂存队列、回合锁、事件录制）
+│   ├── store.py           #   会话持久化（~/.ollama-agent/sessions/*.json 的读/写/列/删）
+│   ├── stream.py          #   StreamEmitter（回合事件 → NDJSON 给浏览器）
+│   └── static/            #   前端三件套（index.html / app.js / style.css，零框架）
+├── tests/                 # 离线自测（不依赖 Ollama/网络）
+│   ├── test_tools.py      #   工具注册 + 读写列图 + 剪贴板 + 热键冒烟 + 面板状态机
+│   ├── test_webui.py      #   UI 冒烟（路由/流协议/上传/配置热更新）
+│   ├── test_sessions.py   #   会话持久化（存档/恢复/切换/删除/全文搜索/HTTP 接口）
+│   ├── test_ui_sidebar.py #   侧栏收起展开的浏览器回归（Playwright）
+│   ├── test_ui_search.py  #   历史对话搜索的浏览器回归（Playwright）
+│   ├── test_ui_reset.py   #   清空/删除对话的浏览器回归（Playwright）
+│   └── test_cli_palette_console.py  # 行内面板真控制台验证（AllocConsole 注入按键 + 读屏）
+└── requirements.txt       # openpyxl / python-docx；playwright 可选
+```
+
+## 性能提示（重要）
+
+1. **慢的根源是模型加载，不是 Agent**。同一请求热模型 3 秒，冷启动/换 ctx 可能 3 分钟
+   （小显存卡上模型只有部分进 VRAM）。所以：交互模式自动预热；**一个会话内别随便改 `--ctx`**。
+2. **think=false 是默认**，小模型开思考又慢又容易跑偏；真要推理深度再 `/think on`。
+3. **context 省着用**：历史里的图片会在新回合自动剥离（避免 KV 膨胀）；
+   定位代码先 `grep_file`/`glob_file` 再 `read_file` 精读，别整目录灌进 prompt；
+   改文件用 `edit_file` 精确替换，别整文件重写白烧 token。
+4. 搜索优先信 **AI 聚合摘要**（一次搜索拿综合答案），少跑几轮 browse。
+
+## 测试
+
+```bash
+python tests/test_tools.py            # 离线回归：工具注册 + 读写列图 + skill + @ 引用 + 面板状态机
+python tests/test_webui.py            # Web UI 冒烟：路由/NDJSON 流协议/上传/配置热更新
+python tests/test_sessions.py         # 会话持久化：存档/恢复/切换/删除/全文搜索/HTTP 接口
+python tests/test_ui_sidebar.py       # 侧栏收起展开（Playwright，需装 playwright）
+python tests/test_ui_search.py        # 历史对话搜索（Playwright，需装 playwright）
+python tests/test_ui_reset.py         # 清空/删除对话（Playwright，需装 playwright）
+python tests/test_cli_palette_console.py   # 行内面板真控制台验证（Windows，需真实控制台）
+```
+
+> 测试会把 `OLLAMA_AGENT_SESSIONS` 指到临时目录，不会动你真实的 `~/.ollama-agent/sessions`。
+
+## 已知限制
+
+- 百度 AI 总结卡片是灰度实验，单次约五成概率出现（代码里有重试）；其引用来源🔗是 JS 弹层，抓不到 URL
+- Bing 的 AI 摘要绑登录态，headless 抓不到，只保留常规结果
+- 图片理解需要模型支持 vision（`qwen3.5:9b` 支持）
+- Office 读写只支持 OOXML 新格式（docx/xlsx/pptx）；`.doc/.xls/.ppt` 旧二进制格式请另存为新格式；`.pptx` 只读不写
+- Excel 大表最多抽 500 行（防止撑爆 context）；`.xlsb`、PDF 暂不支持
+- 剪贴板/热键仅支持 Windows（ctypes Win32）：取图认位图/PNG 格式，取文件认 Ctrl+C 的 CF_HDROP；复制图片**文件**用 Alt+V 走文件路径也行（模型会 load_image）
+- Alt+V 是全局热键，若被其它软件抢先占用，启动时会提示（用 /paste 替代，或 --no-hotkey 关闭）

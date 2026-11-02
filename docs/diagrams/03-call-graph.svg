@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 368" width="100%" role="img">
+<title>模块调用关系</title>
+<desc>CLI 与 WebUI 两条路径汇合到同一个 run_turn，再由 run_turn 调用 client.chat、tools.dispatch 与 emitter，最终触达 Ollama、具体工具与输出端。</desc>
+<defs>
+<marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="680" height="368" fill="#FFFFFF"/>
+
+<rect x="60" y="40" width="250" height="56" rx="10" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="185" y="60" font-family="system-ui, sans-serif" font-size="14" font-weight="500" fill="#633806" text-anchor="middle" dominant-baseline="central">CLI：cli.py</text>
+<text x="185" y="78" font-family="system-ui, sans-serif" font-size="12" fill="#854F0B" text-anchor="middle" dominant-baseline="central">REPL · 斜杠命令 · @ 引用</text>
+
+<rect x="370" y="40" width="250" height="56" rx="10" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="495" y="60" font-family="system-ui, sans-serif" font-size="14" font-weight="500" fill="#633806" text-anchor="middle" dominant-baseline="central">WebUI：server → session</text>
+<text x="495" y="78" font-family="system-ui, sans-serif" font-size="12" fill="#854F0B" text-anchor="middle" dominant-baseline="central">HTTP · 锁串行 · 确认闸</text>
+
+<path d="M185 96 L300 122" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M495 96 L380 122" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<rect x="190" y="124" width="300" height="56" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="340" y="144" font-family="system-ui, sans-serif" font-size="14" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">run_turn · loop.py</text>
+<text x="340" y="162" font-family="system-ui, sans-serif" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">唯一编排点：模型 ↔ 工具 ↔ 历史</text>
+
+<path d="M300 180 L155 206" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M340 180 L340 206" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M380 180 L525 206" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<rect x="50" y="208" width="180" height="56" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="140" y="228" font-family="system-ui, sans-serif" font-size="14" font-weight="500" fill="#085041" text-anchor="middle" dominant-baseline="central">client.chat</text>
+<text x="140" y="246" font-family="system-ui, sans-serif" font-size="12" fill="#0F6E56" text-anchor="middle" dominant-baseline="central">流式 /api/chat</text>
+
+<rect x="250" y="208" width="180" height="56" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="340" y="228" font-family="system-ui, sans-serif" font-size="14" font-weight="500" fill="#085041" text-anchor="middle" dominant-baseline="central">tools.dispatch</text>
+<text x="340" y="246" font-family="system-ui, sans-serif" font-size="12" fill="#0F6E56" text-anchor="middle" dominant-baseline="central">15 个工具任一</text>
+
+<rect x="450" y="208" width="180" height="56" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="540" y="228" font-family="system-ui, sans-serif" font-size="14" font-weight="500" fill="#085041" text-anchor="middle" dominant-baseline="central">emitter</text>
+<text x="540" y="246" font-family="system-ui, sans-serif" font-size="12" fill="#0F6E56" text-anchor="middle" dominant-baseline="central">终端 / NDJSON</text>
+
+<path d="M140 264 L140 290" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M340 264 L340 290" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M540 264 L540 290" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<rect x="50" y="292" width="180" height="48" rx="10" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="140" y="316" font-family="system-ui, sans-serif" font-size="13" font-weight="500" fill="#444441" text-anchor="middle" dominant-baseline="central">Ollama :11434</text>
+
+<rect x="250" y="292" width="180" height="48" rx="10" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="340" y="316" font-family="system-ui, sans-serif" font-size="13" font-weight="500" fill="#444441" text-anchor="middle" dominant-baseline="central">文件 / 命令 / 浏览器</text>
+
+<rect x="450" y="292" width="180" height="48" rx="10" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="540" y="316" font-family="system-ui, sans-serif" font-size="13" font-weight="500" fill="#444441" text-anchor="middle" dominant-baseline="central">终端刷字 / 网页渲染</text>
+
+<text x="340" y="350" font-family="system-ui, sans-serif" font-size="11" fill="#888780" text-anchor="middle" dominant-baseline="central">两条入口路径在这里汇合，run_turn 之下不再区分前端</text>
+</svg>

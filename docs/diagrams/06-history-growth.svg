@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 380" width="100%" role="img">
+<title>history 是如何增长的</title>
+<desc>三次请求的 messages 数组：请求一只有 system 与 user；请求二追加 assistant(tool_calls) 与 tool 消息；请求三再追加最终 assistant 回答。</desc>
+<rect x="0" y="0" width="680" height="380" fill="#FFFFFF"/>
+
+<text x="24" y="30" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#2C2C2A">history 是怎么长起来的</text>
+<text x="24" y="50" font-family="system-ui, sans-serif" font-size="12" fill="#888780">每一列都是一次完整请求的 messages —— 累积发送，不是增量。新加的消息用颜色标出</text>
+
+<text x="130" y="80" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle" dominant-baseline="central">请求 1</text>
+<text x="340" y="80" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle" dominant-baseline="central">请求 2</text>
+<text x="550" y="80" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle" dominant-baseline="central">请求 3</text>
+<text x="130" y="96" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">第 1 步</text>
+<text x="340" y="96" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">第 1 步工具执行后</text>
+<text x="550" y="96" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">第 2 步</text>
+
+<rect x="40" y="112" width="180" height="28" rx="6" fill="#F1EFE8" stroke="#BDBBB2" stroke-width="0.5"/>
+<text x="52" y="126" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#5F5E5A" dominant-baseline="central">system</text>
+<text x="100" y="126" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">规则 + 工作空间</text>
+
+<rect x="40" y="148" width="180" height="28" rx="6" fill="#F1EFE8" stroke="#BDBBB2" stroke-width="0.5"/>
+<text x="52" y="162" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#5F5E5A" dominant-baseline="central">user</text>
+<text x="86" y="162" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">读一下 a.txt</text>
+
+<rect x="250" y="112" width="180" height="28" rx="6" fill="#F1EFE8" stroke="#BDBBB2" stroke-width="0.5"/>
+<text x="262" y="126" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#5F5E5A" dominant-baseline="central">system</text>
+<text x="310" y="126" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">规则 + 工作空间</text>
+
+<rect x="250" y="148" width="180" height="28" rx="6" fill="#F1EFE8" stroke="#BDBBB2" stroke-width="0.5"/>
+<text x="262" y="162" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#5F5E5A" dominant-baseline="central">user</text>
+<text x="296" y="162" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">读一下 a.txt</text>
+
+<rect x="250" y="184" width="180" height="28" rx="6" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.7"/>
+<text x="262" y="198" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#0C447C" dominant-baseline="central">assistant</text>
+<text x="322" y="198" font-family="system-ui, sans-serif" font-size="10" fill="#185FA5" dominant-baseline="central">tool_calls: read_file</text>
+
+<rect x="250" y="220" width="180" height="28" rx="6" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.7"/>
+<text x="262" y="234" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#085041" dominant-baseline="central">tool</text>
+<text x="292" y="234" font-family="system-ui, sans-serif" font-size="10" fill="#0F6E56" dominant-baseline="central">文件内容</text>
+
+<rect x="460" y="112" width="180" height="28" rx="6" fill="#F1EFE8" stroke="#BDBBB2" stroke-width="0.5"/>
+<text x="472" y="126" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#5F5E5A" dominant-baseline="central">system</text>
+<text x="520" y="126" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">规则 + 工作空间</text>
+
+<rect x="460" y="148" width="180" height="28" rx="6" fill="#F1EFE8" stroke="#BDBBB2" stroke-width="0.5"/>
+<text x="472" y="162" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#5F5E5A" dominant-baseline="central">user</text>
+<text x="506" y="162" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">读一下 a.txt</text>
+
+<rect x="460" y="184" width="180" height="28" rx="6" fill="#F1EFE8" stroke="#BDBBB2" stroke-width="0.5"/>
+<text x="472" y="198" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#5F5E5A" dominant-baseline="central">assistant</text>
+<text x="532" y="198" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">tool_calls: read_file</text>
+
+<rect x="460" y="220" width="180" height="28" rx="6" fill="#F1EFE8" stroke="#BDBBB2" stroke-width="0.5"/>
+<text x="472" y="234" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#5F5E5A" dominant-baseline="central">tool</text>
+<text x="502" y="234" font-family="system-ui, sans-serif" font-size="10" fill="#888780" dominant-baseline="central">文件内容</text>
+
+<rect x="460" y="256" width="180" height="28" rx="6" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.7"/>
+<text x="472" y="270" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#0C447C" dominant-baseline="central">assistant</text>
+<text x="532" y="270" font-family="system-ui, sans-serif" font-size="10" fill="#185FA5" dominant-baseline="central">最终回答</text>
+
+<path d="M226 166 L244 166" fill="none" stroke="#888780" stroke-width="1.5"/>
+<path d="M240 161 L246 166 L240 171" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M436 200 L454 200" fill="none" stroke="#888780" stroke-width="1.5"/>
+<path d="M450 195 L456 200 L450 205" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+<text x="235" y="300" font-family="system-ui, sans-serif" font-size="10" fill="#888780" text-anchor="middle" dominant-baseline="central">模型说要调工具</text>
+<text x="445" y="300" font-family="system-ui, sans-serif" font-size="10" fill="#888780" text-anchor="middle" dominant-baseline="central">带着工具结果再问</text>
+
+<rect x="40" y="322" width="600" height="34" rx="6" fill="#FAF9F5" stroke="#E5E3DA" stroke-width="0.5"/>
+<text x="52" y="339" font-family="system-ui, sans-serif" font-size="11" fill="#5F5E5A" dominant-baseline="central">铁律：assistant 声明几条 tool_calls，后面就必须有几条 tool 消息 —— 缺一条，下一轮直接 400</text>
+
+<text x="340" y="370" font-family="system-ui, sans-serif" font-size="10" fill="#9A9890" text-anchor="middle" dominant-baseline="central">历史只增不减，所以第 11 章的 P0 优化是「压缩」而不是「清理」</text>
+</svg>
