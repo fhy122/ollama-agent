@@ -21,6 +21,9 @@ from agent.registry import ToolContext, ToolResult, tool
         "多工作表用 '=== 表名 ===' 分节）；"
         ".docx = 生成真正的 Word 文档（content 传 Markdown 子集：# 标题、- 或 1. 列表、| 表格 |、**加粗**、`代码`）；"
         "其他扩展名 = 纯文本原样写入。"
+        "【重要】.svg/.html/.css/.js/.json/.py/.md 这类代码文件也是纯文本，一律直接写："
+        "用户说「生成/做一个 xxx.svg」「输出个 html 页面」时，就把源码交给本工具落盘，"
+        "不要只回复代码让用户手动保存，也不要说自己无法生成文件。"
         "不要把 CSV/Markdown 存成 .txt 冒充 Excel/Word，扩展名决定了真正的文件格式。"
     ),
     parameters={
