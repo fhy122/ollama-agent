@@ -136,7 +136,7 @@ ollama-agent/
 
 | 文件 | 行 | 关键符号 | 具体做什么 | 被谁用 |
 |---|---|---|---|---|
-| `agent/config.py` | 68 | `SYSTEM_PROMPT`、`THINK_VALUES`、`AgentConfig` | 默认模型 `qwen3.5:9b`、默认 ctx 32768、12 步上限；系统提示词 8 条规则 | 所有模块 |
+| `agent/config.py` | 68 | `SYSTEM_PROMPT`、`THINK_VALUES`、`AgentConfig` | 默认模型 `qwen3.5:9b`、默认 ctx 65536、12 步上限；系统提示词 8 条规则 | 所有模块 |
 | `agent/registry.py` | 117 | `ToolResult`、`ToolContext.resolve/approve`、`Tool.run/spec`、`@tool`、`dispatch` | 工具契约 + 全局注册表；`resolve()` 定义"相对路径锚定工作空间" | loop、所有 tools |
 | `agent/loop.py` | 164 | `new_history`、`run_turn`、`strip_old_images`、`pad_unanswered_tool_calls` | 拼系统提示 + 技能索引；跑最多 `max_steps` 步"模型↔工具"循环 | cli、webui.session |
 | `agent/client.py` | 234 | `OllamaClient.chat/warmup/list_models`、`_error_text`、`_strip_images` | 流式解析 `/api/chat`；tool_calls 按下标合并；两类 400 自动重试 | loop.cli |

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_HOST = "http://localhost:11434"
-DEFAULT_CTX = 32768
+DEFAULT_CTX = 65536
 MAX_TOOL_STEPS = 12
 
 # think 字段取值：off=False 关思考（默认）；auto=完全不传该字段（兼容不支持思考的模型）

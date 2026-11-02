@@ -12,7 +12,7 @@ function calling + **thinking off by default** (`think=false`) + file I/O + visi
 
 > Why build another agent framework? Existing ones are hostile to small local models — too slow, or too context-hungry.
 > This project has exactly two core goals: **let the model skip thinking** (`think=false` saves time and tokens), and
-> **keep context under control** (default 32768).
+> **keep context under control** (default 65536).
 
 ## Features
 

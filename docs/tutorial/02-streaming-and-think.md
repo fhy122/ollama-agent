@@ -37,7 +37,7 @@ from dataclasses import dataclass
 
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_HOST = "http://localhost:11434"
-DEFAULT_CTX = 32768
+DEFAULT_CTX = 65536
 MAX_TOOL_STEPS = 12
 
 # think 字段取值：off=False 关思考（默认）；auto=None 表示"完全不传这个字段"

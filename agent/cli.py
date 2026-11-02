@@ -539,7 +539,7 @@ def main(argv: list[str] | None = None):
                     print(f"num_ctx = {cfg.num_ctx or '服务端默认'}（下次调用生效，可能触发重载）",
                           flush=True)
                 except ValueError:
-                    print("用法: /ctx 32768（0=服务端默认）", flush=True)
+                    print("用法: /ctx 65536（0=服务端默认）", flush=True)
             elif cmd == "/ws":
                 if not arg:
                     print(f"工作空间: {ctx.workspace}", flush=True)

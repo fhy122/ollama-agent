@@ -15,7 +15,7 @@ Web UI and confirmation gates on destructive tools. See [README_EN.md](README_EN
 工具调用（function calling）+ **默认关闭思考（think=false）** + 文件读写 + 图片理解 + PDF 阅读 + 联网搜索/读网页。
 
 > 为什么自己做：市面上的 Agent 框架对本地小模型不友好——要么太慢、要么吃 context。
-> 这个项目核心诉求就两条：**能选 think=false**（省时间省 token），**context 可控**（默认 32768）。
+> 这个项目核心诉求就两条：**能选 think=false**（省时间省 token），**context 可控**（默认 65536）。
 
 ## 环境要求
 
@@ -134,7 +134,7 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 --model       模型名，默认 qwen3.5:9b
 --think       off|on|low|medium|high|max|auto   默认 off（= think:false）
               auto = 不传 think 字段（兼容不支持思考的模型）
---ctx         num_ctx，默认 32768；0 = 用 Ollama 服务端默认
+--ctx         num_ctx，默认 65536；0 = 用 Ollama 服务端默认
               ⚠️ 改 ctx 会触发模型重载，一个会话内别随便改
 --temp        temperature，默认 0.7
 --img <路径>  给第一条消息附图片，可多次
