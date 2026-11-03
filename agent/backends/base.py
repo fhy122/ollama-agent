@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import socket
 import threading as _threading
 import urllib.error
@@ -36,6 +37,14 @@ _WAIT_TICK_SEC = 1.0
 # （tests/test_abort_handshake.py 有完整复现与回归）。
 # 给握手单独一个短预算，最坏 15s 就报错/响应打断。
 _HANDSHAKE_TIMEOUT = 15.0
+
+# 首字节（响应头）预算（秒）。请求已发出、连接正常，但对端迟迟不回第一个
+# 字节时，最多等这么久就报错，而不是挂满 cfg.timeout（1800s）。线上实测
+# （2026-11-03 截图）：中转站收了请求不吐字，第 5 步干等 30 分钟才报错。
+# 覆盖两类合法慢：本地模型冷启动加载（几十秒）、长上下文 prefill（分钟级）。
+# 流式读的超时另算（cfg.timeout）——响应头到了之后，块间隔可能很大（深度
+# 思考不发字），所以读流仍用长值。环境变量可调，本地大模型冷启动慢就调大。
+_TTFT_TIMEOUT = float(os.environ.get("OLLAMA_AGENT_TTFT", "180"))
 
 
 def _short_handshake_cls(base: type) -> type:
@@ -259,16 +268,44 @@ class ChatClient:
 
         payload = self.build_payload(messages, tools)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        # 首字节预算：等响应头阶段最多这么多秒。不超过 cfg.timeout——
+        # 用户显式调小总超时时以小的为准。
+        ttft = min(_TTFT_TIMEOUT, float(self.cfg.timeout))
         try:
+            # 建连/握手/发送都发生在 request() 里（auto_open）
             conn.request("POST", path, body=body, headers=self.headers())
-            resp = conn.getresponse()
         except TimeoutError as e:
             self._drop_conn()
-            # 首字节之前就超时：模型加载或长上下文 prefill 太慢，此时一个 token 都没收到
+            # 卡在连接/握手/发送：压根没到「等模型回话」那一步
             raise RuntimeError(
-                f"等{self.name}超过 {self.cfg.timeout} 秒仍无响应"
-                f"（模型加载或处理长上下文太慢）。"
-                f"调大 agent/config.py 里的 timeout，或换更小的模型/上下文") from e
+                f"连不上{self.name}：发出请求就超时了（{e}）。"
+                f"{self.connection_hint()}") from e
+        try:
+            # 首字节短预算：等响应头阶段对端吞请求不吐字时，快速报错/
+            # 响应打断，而不是挂满 cfg.timeout（1800s）。响应头到了立刻
+            # 恢复长超时——之后的流式块间隔可能很大（深度思考不发字）。
+            sock = getattr(conn, "sock", None)
+            if sock is not None and hasattr(sock, "settimeout"):
+                try:
+                    sock.settimeout(ttft)
+                    resp = conn.getresponse()
+                finally:
+                    try:
+                        sock.settimeout(self.cfg.timeout)   # 读流恢复长超时
+                    except Exception:
+                        pass
+            else:
+                resp = conn.getresponse()   # 替身连接没有 sock，原样走
+        except TimeoutError as e:
+            self._drop_conn()
+            # 首字节之前就超时：一个 token 都没收到。此时几乎不可能是
+            # 「模型太慢」——慢也该在 TTFT 预算内回响应头；多半是对端挂了。
+            raise RuntimeError(
+                f"等{self.name}第一个字节超过 {ttft:.0f} 秒仍无响应"
+                f"（连接正常，但对端收到请求后一直不回）。"
+                f"多为中转站过载，直接重发一次常可恢复；持续复现请换端点/换模型，"
+                f"或减小上下文。本地模型冷启动慢可设环境变量 "
+                f"OLLAMA_AGENT_TTFT 调大此预算") from e
         except (ConnectionError, OSError) as e:
             self._drop_conn()
             if self._abort_requested:

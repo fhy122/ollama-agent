@@ -224,7 +224,9 @@ def test_post_chat_first_byte_timeout() -> None:
             raise AssertionError("应当抛 RuntimeError")
         except RuntimeError as e:
             msg = str(e)
-            assert "timeout" in msg and "秒" in msg, msg
+            # 2026-11-03 起首字节单独预算（TTFT）：文案改为明说「第一个字节」
+            # 超时 + 重发建议，不再误导用户去调大已是 1800s 的 timeout
+            assert "第一个字节" in msg and "秒" in msg, msg
     finally:
         B.http.client.HTTPConnection = REAL_CONN
     print("PASS: 首字节超时 → 可读提示（含调参建议）")
