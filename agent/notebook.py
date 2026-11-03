@@ -43,6 +43,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent import HIDDEN_DIRNAME
+
 # 切段规则或提示词改了就把版本 +1，旧笔记自动作废（宁可重读，不要读错的笔记）
 NOTEBOOK_VERSION = 1
 
@@ -50,7 +52,7 @@ NOTEBOOK_VERSION = 1
 # 为什么不放全局目录（~/.ollama-agent）或项目包目录：笔记是「这份文档读出了什么」，
 # 天然属于某个工作空间。放全局会让 A 项目的笔记被 B 项目读到；放包目录则会在
 # 每个 checkout 里各存一份、彼此不认，而且用户根本不知道它在哪。
-NOTEBOOK_SUBDIR = Path(".ollama-agent") / "notes"
+NOTEBOOK_SUBDIR = Path(HIDDEN_DIRNAME) / "notes"
 
 NOTEBOOK_ENV = "OLLAMA_AGENT_NOTEBOOK"          # 设 off/0 可整体关掉
 NOTEBOOK_DIR_ENV = "OLLAMA_AGENT_NOTEBOOK_DIR"  # 显式指定目录（测试/排障用）

@@ -8,6 +8,7 @@ import base64
 import json
 import mimetypes
 import re
+import shutil
 import threading
 import time
 import webbrowser
@@ -15,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from agent import HIDDEN_DIRNAME
 from agent.config import THINK_VALUES, AgentConfig
 from webui.session import AgentSession
 from webui.stream import StreamEmitter
@@ -23,8 +25,38 @@ import tools as tools_pkg
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_UPLOAD = 20 * 1024 * 1024  # 20MB
-_SKIP_DIRS = {".uploads", ".clip_cache", ".workbuddy", ".ollama-agent",
+# 应用数据统一在 {workspace}/.ollama-agent/ 下（HIDDEN_DIRNAME）。
+# 旧的 .uploads/.clip_cache 留在集合里：迁移前的残留也不该出现在搜索结果里。
+_SKIP_DIRS = {HIDDEN_DIRNAME, ".uploads", ".clip_cache", ".workbuddy",
               "__pycache__", ".git", "node_modules"}
+
+# 旧版散落在工作区根下的隐藏目录 → 新家（.ollama-agent/ 下的子目录名）。
+_LEGACY_DIRS = {".uploads": "uploads", ".clip_cache": "clip"}
+
+
+def migrate_legacy_dirs(ws: Path) -> None:
+    """把旧版散落的 .uploads/.clip_cache 收进 .ollama-agent/（启动时一次性）。
+
+    只 move 不 copy，工作区根下不再留旧目录。旧会话里存的附件绝对路径
+    会因此失效，但 read_file 的 _missing_hint 会按文件名在新目录里找到
+    同名文件并给出正确路径，断链自动纠正。迁移失败不挡启动（旧目录留原位）。
+    """
+    base = ws / HIDDEN_DIRNAME
+    for old, new in _LEGACY_DIRS.items():
+        src = ws / old
+        if not src.is_dir():
+            continue
+        dst = base / new
+        try:
+            dst.mkdir(parents=True, exist_ok=True)
+            for item in src.iterdir():
+                target = dst / item.name
+                if not target.exists():   # 新家已有同名就不动，宁缺勿覆盖
+                    shutil.move(str(item), str(target))
+            if not any(src.iterdir()):    # 全搬走才删壳；有残留（同名跳过）留原地
+                src.rmdir()
+        except OSError:
+            pass
 
 
 def _search_files(ws: Path, q: str, limit: int = 20) -> list[dict]:
@@ -60,7 +92,7 @@ def build_files_hint(files: list[str], workspace: Path) -> str:
     """附件指引，按「副本 / 原件」分开说话。
 
     两条来源的文件长得一样（都是路径字符串），但模型该做的事不同：
-      - 拖拽/选文件上传的副本落在工作区 .uploads/ 里，模型得知道去那儿找；
+      - 拖拽/选文件上传的副本落在工作区 .ollama-agent/uploads/ 里，模型得知道去那儿找；
       - 「从路径添加」的是本机原件（绝对路径），没有副本，直读即可 ——
         别让模型再 list_dir 去摸一遍（实测它真的会去摸）。
     相对路径一律视为工作区内（read_file 的 resolve 规则也是这么锚定的）。
@@ -522,7 +554,7 @@ def make_handler(app: "WebUIApp"):
             if len(data) > MAX_UPLOAD:
                 self.send_json({"error": "文件超过 20MB"}, 400)
                 return
-            up_dir = app.session.workspace / ".uploads"
+            up_dir = app.session.workspace / HIDDEN_DIRNAME / "uploads"
             up_dir.mkdir(parents=True, exist_ok=True)
             dest = up_dir / name
             dest.write_bytes(data)
@@ -533,7 +565,7 @@ def make_handler(app: "WebUIApp"):
 
             服务和浏览器在同一台机器上（只绑 127.0.0.1），「选文件上传」
             实际是同机拷贝。这里让用户直接给路径，验证存在后原样返回，
-            模型用 read_file 按绝对路径直读，省掉一份拷贝和 .uploads 堆积。
+            模型用 read_file 按绝对路径直读，省掉一份拷贝和附件副本堆积。
             """
             body = _json_body(self)
             # 容忍从资源管理器「复制文件地址」带出来的引号
@@ -621,6 +653,8 @@ class WebUIApp:
         print(f"模型就绪（{time.time() - t0:.1f}s）", flush=True)
 
     def serve(self, open_browser: bool = True) -> None:
+        # 旧版散落的 .uploads/.clip_cache 收进 .ollama-agent/（幂等，没有就跳过）
+        migrate_legacy_dirs(self.session.workspace)
         # 预热放在建 HTTP 服务之前：浏览器打开时模型已在显存里，
         # 而不是等服务起来了再让第一句话去触发加载
         if self.session.cfg.warm:

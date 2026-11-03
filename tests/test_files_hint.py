@@ -1,8 +1,8 @@
 """build_files_hint 自测：附件指引必须区分「工作区内副本 / 本机原件」。
 
 背景：老板指出同机场景下「上传=纯拷贝」，新增「从路径添加」后，
-给模型的指引若还笼统说「已上传到工作空间」，模型会去 .uploads 里
-list_dir 瞎摸原件（实测行为）。锁住三类分组行为。
+给模型的指引若还笼统说「已上传到工作空间」，模型会去 .ollama-agent/uploads
+里 list_dir 瞎摸原件（实测行为）。锁住三类分组行为。
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from agent import HIDDEN_DIRNAME  # noqa: E402
 from webui.server import build_files_hint  # noqa: E402
 
 
@@ -19,7 +20,7 @@ def test_inner_only():
     """上传副本（工作区内绝对路径 + 相对路径）→ 只说工作空间那份。"""
     with tempfile.TemporaryDirectory() as td:
         ws = Path(td)
-        up = ws / ".uploads" / "a.pptx"
+        up = ws / HIDDEN_DIRNAME / "uploads" / "a.pptx"
         up.parent.mkdir(parents=True)
         up.write_bytes(b"x")
         hint = build_files_hint([str(up), "doc/说明.md"], ws)
@@ -46,7 +47,7 @@ def test_mixed():
     """混挂：两段指引都在，各自文件归各自段落。"""
     with tempfile.TemporaryDirectory() as td:
         ws = Path(td)
-        up = ws / ".uploads" / "b.pdf"
+        up = ws / HIDDEN_DIRNAME / "uploads" / "b.pdf"
         up.parent.mkdir(parents=True)
         up.write_bytes(b"x")
         outer = ws.parent / "outside.docx"

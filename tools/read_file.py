@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent import docparse, longdoc
+from agent import HIDDEN_DIRNAME, docparse, longdoc
 from agent.registry import ToolContext, ToolResult, tool
 
 
@@ -20,16 +20,19 @@ def _long_hint(ctx: ToolContext, chars: int) -> str:
     return longdoc.long_read_hint(chars, n)
 
 
-# WebUI 拖入/上传的附件目录（webui/server.py handle_upload 写这里）
-UPLOAD_DIRNAME = ".uploads"
+# WebUI 拖入/上传的附件目录（webui/server.py handle_upload 写这里）。
+# 放应用数据目录下，不再是工作区根下散落的 .uploads/
+UPLOAD_DIRNAME = Path(HIDDEN_DIRNAME) / "uploads"
 
 
 def _missing_hint(p: Path, ws: Path) -> str:
     """文件不存在时给「下一步该干嘛」，而不是只报一个路径。
 
-    实战教训：WebUI 拖入的附件落在 {workspace}/.uploads/，模型拿相对路径去猜，
-    猜成 .clip_cache/xxx.pdf 之后 read_file 秒失败，它就开始乱试 clipboard_image /
-    load_image，把一张截图当成 PDF 读。错误信息必须直接指出附件真实位置。
+    实战教训：WebUI 拖入的附件落在 {workspace}/.ollama-agent/uploads/，
+    模型拿相对路径去猜，猜成截图缓存目录里的 pdf 之后 read_file 秒失败，
+    它就开始乱试 clipboard_image / load_image，把一张截图当成 PDF 读。
+    错误信息必须直接指出附件真实位置。目录迁移后（.uploads →
+    .ollama-agent/uploads）旧会话里的失效路径也靠这里的同名兜底自动纠正。
     """
     up = ws / UPLOAD_DIRNAME
     if up.is_dir():
@@ -63,7 +66,7 @@ def _missing_hint(p: Path, ws: Path) -> str:
         "【文档很长、一次读不完时（返回里带「超出单次可读量」），改用 read_long_doc "
         "整篇分段精读】，不要靠反复翻页硬凑；只有想精读某一两段细节时才回来用 "
         "offset/pages 取局部。"
-        "用户本条消息拖入/上传的文件都在工作空间 .uploads/ 目录下，按那个路径读。"
+        f"用户本条消息拖入/上传的文件都在工作空间 {HIDDEN_DIRNAME}/uploads/ 目录下，按那个路径读。"
         "相对路径在工作空间内查找；用户给了绝对路径就直接用。"
     ),
     parameters={

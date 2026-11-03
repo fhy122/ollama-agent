@@ -43,8 +43,10 @@ import time
 import uuid
 from pathlib import Path
 
+from agent import HIDDEN_DIRNAME
+
 ENV_CONFIG = "OLLAMA_AGENT_CONFIG"
-DEFAULT_PATH = Path.home() / ".ollama-agent" / "config.json"
+DEFAULT_PATH = Path.home() / HIDDEN_DIRNAME / "config.json"
 VERSION = 1
 
 # 一个 profile 里跟「连哪个模型」有关的字段。顺序即前端表单顺序。

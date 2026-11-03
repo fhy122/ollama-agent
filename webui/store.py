@@ -29,7 +29,9 @@ import threading
 import time
 from pathlib import Path
 
-DEFAULT_ROOT = Path.home() / ".ollama-agent" / "sessions"
+from agent import HIDDEN_DIRNAME
+
+DEFAULT_ROOT = Path.home() / HIDDEN_DIRNAME / "sessions"
 ENV_ROOT = "OLLAMA_AGENT_SESSIONS"
 
 MAX_TURNS = 200          # 单个会话保留的最近轮次（防止文件无限长）

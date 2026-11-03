@@ -5,7 +5,7 @@
 
 对外：
     grab_image_png() -> bytes           # PNG 字节；无图/失败抛 ClipboardError
-    grab_and_cache(workspace) -> Path   # 抓图并缓存到 {workspace}/.clip_cache/
+    grab_and_cache(workspace) -> Path   # 抓图并缓存到 {workspace}/.ollama-agent/clip/
 """
 from __future__ import annotations
 
@@ -17,7 +17,11 @@ import zlib
 from datetime import datetime
 from pathlib import Path
 
-CACHE_DIRNAME = ".clip_cache"
+from agent import HIDDEN_DIRNAME
+
+# 截图缓存放应用数据目录下（{workspace}/.ollama-agent/clip/），
+# 不再是工作区根下散落的 .clip_cache/
+CACHE_DIRNAME = Path(HIDDEN_DIRNAME) / "clip"
 
 # Win32 常量
 _CF_DIB = 8
@@ -247,7 +251,7 @@ def grab_files() -> list[Path]:
 
 
 def grab_and_cache(workspace: Path) -> Path:
-    """抓剪贴板图片并缓存到 {workspace}/.clip_cache/clip_时间戳.png，返回缓存路径。"""
+    """抓剪贴板图片并缓存到 {workspace}/.ollama-agent/clip/clip_时间戳.png，返回缓存路径。"""
     png = grab_image_png()
     cache = Path(workspace) / CACHE_DIRNAME
     cache.mkdir(parents=True, exist_ok=True)

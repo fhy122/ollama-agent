@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import base64
 
-from agent.clipboard import ClipboardError, grab_and_cache
+from agent import HIDDEN_DIRNAME
+from agent.clipboard import CACHE_DIRNAME, ClipboardError, grab_and_cache
 from agent.registry import ToolContext, ToolResult, tool
 
 # 剪贴板里只会是位图，save_as 只允许这些后缀。
@@ -17,9 +18,10 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
     name="clipboard_image",
     description=(
         "读取系统剪贴板中的图片（用户刚截图但没保存文件时用这个）。"
-        "图片会缓存到工作空间 .clip_cache/ 目录并作为附件返回，视觉模型可直接看到内容。"
+        f"图片会缓存到工作空间 {CACHE_DIRNAME}/ 目录并作为附件返回，视觉模型可直接看到内容。"
         "用户说「看剪贴板」「我截图了」「看这张图」而没有给文件路径时调用它。"
-        "【反向指引】用户拖入/上传的附件、或消息里已经给了文件路径（.uploads/xxx.pdf 等），"
+        "【反向指引】用户拖入/上传的附件、或消息里已经给了文件路径"
+        f"（{HIDDEN_DIRNAME}/uploads/xxx.pdf 等），"
         "不是剪贴板内容，直接用 read_file / load_image 读那个路径，不要调本工具。"
     ),
     parameters={
@@ -28,7 +30,7 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
             "save_as": {
                 "type": "string",
                 "description": "可选：把截图另存为工作空间内的文件名（如 shots/a.png），"
-                               "只支持图片后缀；不填则只缓存到 .clip_cache/",
+                               f"只支持图片后缀；不填则只缓存到 {CACHE_DIRNAME}/",
             },
         },
         "required": [],

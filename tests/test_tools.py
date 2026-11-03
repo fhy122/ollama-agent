@@ -10,6 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tools  # noqa: E402  触发全部工具注册
+from agent import HIDDEN_DIRNAME  # noqa: E402
+from agent.clipboard import CACHE_DIRNAME  # noqa: E402
 from agent.registry import ToolContext, all_specs, dispatch  # noqa: E402
 
 
@@ -502,7 +504,7 @@ def main() -> None:
 
             r = dispatch("clipboard_image", {"save_as": "shots/clip.png"}, ctx)
             assert "剪贴板图片" in r.text and r.images, r.text
-            assert (ws / ".clip_cache").exists(), "缓存目录应存在"
+            assert (ws / CACHE_DIRNAME).exists(), "缓存目录应存在"
             assert (ws / "shots" / "clip.png").exists(), "save_as 未生效"
 
             # save_as 只许图片后缀：曾让模型把 PNG 字节写进 .pdf，
@@ -806,24 +808,24 @@ def main() -> None:
         print(f"SKIP: 行内面板测试（{type(e).__name__}: {e}）")
 
     # ---- 附件路径指路：模型猜错目录时，错误信息要直接给正确路径 ----
-    # 实战：WebUI 附件在 .uploads/，模型猜成 .clip_cache/xxx.pdf，
+    # 实战：WebUI 附件在 .ollama-agent/uploads/，模型猜成别的目录里的 pdf，
     # 秒失败后开始乱试 clipboard_image / load_image，把截图当 PDF 读
     with tempfile.TemporaryDirectory() as td3:
         ws3 = Path(td3) / "ws"
         ws3.mkdir()
         ctx3 = ToolContext(workspace=ws3)
-        up = ws3 / ".uploads"
-        up.mkdir()
+        up = ws3 / HIDDEN_DIRNAME / "uploads"
+        up.mkdir(parents=True)
         real = up / "研习室.pdf"
         real.write_text("x", encoding="utf-8")
 
-        r = dispatch("read_file", {"path": ".clip_cache/研习室.pdf"}, ctx3)
+        r = dispatch("read_file", {"path": "screenshots/研习室.pdf"}, ctx3)
         assert "文件不存在" in r.text and "同名文件其实在" in r.text, r.text
         assert str(real) in r.text, "应给出附件的真实绝对路径"
 
         r = dispatch("read_file", {"path": "压根没有这个文件.pdf"}, ctx3)
-        assert "附带的文件在" in r.text and ".uploads" in r.text, r.text
-        assert "研习室.pdf" in r.text, "应列出 .uploads 里的真实附件"
+        assert "附带的文件在" in r.text and str(up) in r.text, r.text
+        assert "研习室.pdf" in r.text, "应列出上传目录里的真实附件"
 
         print("PASS: read_file 附件路径指路（同名直给真实路径 / 无同名列最近附件）")
 

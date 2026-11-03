@@ -4,6 +4,11 @@ __version__ = "0.2.0"
 
 APP_NAME = "ollama-agent"
 
+# 应用数据目录名（工作区/主目录下都以它为根）：.ollama-agent。
+# 所有隐藏目录的「点 + 名字」一律从这派生，不许再写 ".ollama-agent"、
+# ".uploads" 这类字面量——改名/换应用名时只动这一处。
+HIDDEN_DIRNAME = f".{APP_NAME}"
+
 
 def user_agent() -> str:
     """出站 HTTP 请求统一用的 User-Agent，名称与版本只在这里定义一次。

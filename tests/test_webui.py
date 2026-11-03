@@ -105,7 +105,7 @@ def main():
         up = json.loads(body)
         assert Path(up["path"]).read_text(encoding="utf-8") == "hello ui", up
         Path(up["path"]).unlink()
-        print("PASS: /api/upload（中文名上传到 .uploads/）")
+        print("PASS: /api/upload（中文名上传到 .ollama-agent/uploads/）")
 
         # 空消息聊天 → 流里有 done 事件（不触发模型）
         st, body = _post(base + "/api/chat", {"message": ""})
