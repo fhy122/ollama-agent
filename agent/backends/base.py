@@ -28,6 +28,42 @@ from agent.console import color
 # 心跳间隔（秒）。要足够小才显得「活着」，又不能太密把流刷爆。
 _WAIT_TICK_SEC = 1.0
 
+# TCP 连接 + TLS 握手的预算（秒）。读流的超时另算（cfg.timeout，可长达半小时，
+# 因为长回答的块间隔本来就可能很大）。线上实测（py-spy 抓栈定位）：
+# 中转站 TCP 可达但对握手不响应时，do_handshake 会一直挂到 socket 超时
+# 1800s —— 期间回合线程攥着会话锁，新建/切换对话全被 409 挡回，而另一线程
+# 的 sock.shutdown() 在 Windows 上叫不醒阻塞中的握手
+# （tests/test_abort_handshake.py 有完整复现与回归）。
+# 给握手单独一个短预算，最坏 15s 就报错/响应打断。
+_HANDSHAKE_TIMEOUT = 15.0
+
+
+def _short_handshake_cls(base: type) -> type:
+    """给 http.client 连接类挂「TCP + TLS 握手短预算」：connect 期间把超时
+    换成短值，建连完成后恢复长读超时。
+
+    动态生成子类、每次请求现做：_post_stream 取的是「当前的」http.client
+    连接类 —— 测试替身打在 http.client.HTTP(S)Connection 上（整个类换掉），
+    写死子类会在 import 时绑住原类、把替身绕过去。
+    """
+    budget = _HANDSHAKE_TIMEOUT
+
+    def connect(self):
+        real = self.timeout
+        self.timeout = budget
+        try:
+            base.connect(self)
+        finally:
+            self.timeout = real
+        if self.sock is not None:
+            try:
+                self.sock.settimeout(real)   # 握手完，读流恢复长超时
+            except Exception:
+                pass                          # 替身 sock 未必实现 settimeout
+
+    return type("ShortHandshakeConn", (base,),
+                {"connect": connect, "handshake_timeout": budget})
+
 
 def error_text(body: str) -> str:
     """把后端错误压成一行人话。
@@ -206,9 +242,14 @@ class ChatClient:
         parts = urllib.parse.urlsplit(url)
         host = parts.hostname or "localhost"
         port = parts.port or (443 if parts.scheme == "https" else 80)
-        cls = (http.client.HTTPSConnection if parts.scheme == "https"
-               else http.client.HTTPConnection)
-        conn = cls(host, port, timeout=self.cfg.timeout)
+        base_cls = (http.client.HTTPSConnection if parts.scheme == "https"
+                    else http.client.HTTPConnection)
+        # 连接类挂短握手预算：TCP+TLS 阶段挂死时 15s 内报错/响应打断，
+        # 而不是挂满 cfg.timeout（1800s）把会话锁一起攥死。
+        # 只对真的 stdlib 连接类生效；测试替身（工厂函数 / 非 stdlib 类）原样透传。
+        if isinstance(base_cls, type) and issubclass(base_cls, http.client.HTTPConnection):
+            base_cls = _short_handshake_cls(base_cls)
+        conn = base_cls(host, port, timeout=self.cfg.timeout)
         conn.auto_open = 1
         self._current_conn = conn
 
