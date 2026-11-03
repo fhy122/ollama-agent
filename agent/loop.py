@@ -16,6 +16,7 @@ from agent.registry import ToolContext, ToolResult
 from agent.repeat_guard import RepeatGuard
 from agent.retry import (RETRYABLE, backoff_delay, classify_error,
                          interruptible_sleep)
+from agent import timectx
 
 import tools
 
@@ -204,6 +205,7 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
     if images:
         user_msg["images"] = images
     history.append(user_msg)
+    turn_start_ts = time.time()     # 时间读数的第 1 步基准（用户消息时刻）
 
     tools_spec = None if cfg.no_tools else tools.all_specs()
     want_expert = _expert_available() and expert_requested(user_text)  # 用户点名要用外脑
@@ -211,6 +213,7 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
     final_text = ""
     resp: dict = {}
     pending_reminders: list[dict] = []          # 命中重复阈值待注入的提醒
+    last_inject_ts: float | None = None         # 本回合上一次时间读数的采样时刻
 
     def _stopped() -> bool:
         return cancel is not None and cancel.is_set()
@@ -256,11 +259,23 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
             # 半截输出失败 → 已生成部分先入历史，注入「从中断处继续」后自动续写
             #（用户已看到的字绝不回滚，也绝不重复生成）；
             # FATAL（Key 错/参数错）与次数用尽走原收尾，不打无意义的转。
+            # 时间读数（time-context）：请求时临时追加、不入 history——
+            # 历史保持干净，模型每步都看到新鲜时刻。消息每步构造一次
+            #（采样时刻冻结），但请求快照在**每次尝试内**重拼：半截断流的
+            # 续写指令会先进 history，重试请求必须带上它，不能用旧快照。
+            now_ts = time.time()
+            time_msg = None
+            if timectx.should_inject(step, last_inject_ts, now_ts,
+                                     cfg.time_context, cfg.time_refresh_sec):
+                baseline = turn_start_ts if step == 1 else (last_inject_ts or turn_start_ts)
+                time_msg = timectx.time_message(step, baseline, now_ts)
+                last_inject_ts = now_ts
             retry_no = 0
             while True:
+                req_messages = history + [time_msg] if time_msg else history
                 try:
                     resp = client.chat(
-                        history,
+                        req_messages,
                         tools=tools_spec,
                         on_text=emitter.text,
                         on_think=emitter.think,

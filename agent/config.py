@@ -56,6 +56,8 @@ class AgentConfig:
     max_steps: int = MAX_TOOL_STEPS
     stream_retries: int = 3             # 断流/超时自动重试次数上限（0 = 关闭，行为同旧版）
     spill_max_chars: int = 12000        # 工具结果超此字符数→全文落盘+预览（0 = 关闭）
+    time_context: bool = True           # 每次请求注入时间读数（帮模型理解「今天/等了多久」）
+    time_refresh_sec: int = 600         # 时间读数刷新间隔；0 = 每步都注入
     confirm: bool = False              # True 时写/改/删文件、跑命令、联网前需人工确认
     use_color: bool = True
     show_think: bool = True            # 开思考时是否打印思考过程
