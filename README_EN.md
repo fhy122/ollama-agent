@@ -17,6 +17,9 @@ function calling + **thinking off by default** (`think=false`) + file I/O + visi
 ## Features
 
 - **Web UI** — streaming chat, expandable tool-call cards, session history with full-text search, file preview, settings panel. Zero JS frameworks: just `index.html / app.js / style.css`.
+- **Parallel sessions** — each conversation is an independent agent instance: start a new chat while another one is still generating; the sidebar shows live badges (● generating, ✦ finished in background). A page refresh never kills a running turn — the frontend re-attaches via a live event snapshot.
+- **Input queue** — typing + Enter while the model is generating queues the message instead of interrupting: send it immediately via steer (takes effect at the next tool-step boundary), edit it back out, delete it, or let it auto-send when the turn ends.
+- **Stream resilience** — broken streams are classified and retried with backoff (half-printed output is kept and continued); a socket idle budget (default 120 s) distinguishes "model thinking" from "connection dead"; repeated identical tool calls trigger gentle reminders; oversized tool output spills to disk with a retrievable preview; per-step time context keeps the model aware of elapsed time.
 - **15 built-in tools** — read/write/edit/delete files (text, Word, Excel, PPT, PDF), run shell commands, grep/glob, render spreadsheets to PNG, load images for vision models, clipboard screenshots (global hotkey), browse URLs, web search (Bing + Baidu in parallel), on-demand skill loading.
 - **Small-model friendly** — `think=false` by default; concise system prompt (no hardcoded tool rules — tool policies live in each tool's description); images are stripped from history between turns to keep the KV cache small.
 - **Safety rails** — destructive tools (`write_file` / `edit_file` / `delete_file` / `run_command` / network) require confirmation before execution (y/N in CLI, dialog in Web UI); `delete_file` refuses paths outside the workspace and non-recursive deletion of non-empty directories.
@@ -65,13 +68,13 @@ python ollama_agent.py -w D:/docs -p "read weekly-report.docx"
 The first run pre-warms the model (weights loaded into VRAM/RAM — can take a minute or
 more on small GPUs). **After that, responses in the same session are instant.**
 
-## Built-in tools (17)
+## Built-in tools (18)
 
 > Reproduce the count:
 > `python -c "import sys;sys.path.insert(0,'.');import tools;from agent.registry import all_specs;print(len(all_specs()))"`
 >
 > `web_chat` is a private optional module (not in the public repo), so a private
-> checkout registers 18 instead of 17.
+> checkout registers 19 instead of 18.
 
 | Tool | What it does |
 |---|---|
@@ -92,6 +95,7 @@ more on small GPUs). **After that, responses in the same session are instant.**
 | `web_search` | Parallel dual-engine search (Bing results + Baidu AI summary/results) |
 | `skill` | Load a SKILL.md workflow into the conversation on demand |
 | `verify` | Run the mechanical checks of the coding standard: syntax compile / broken doc links / compile Python blocks in docs / run tests |
+| `todo_write` | External task list: pending / in_progress / completed, whole-table replace, one active task at a time; persists across turns in `{workspace}/.ollama-agent/todo.json` |
 
 Adding a tool is one file — drop `tools/your_tool.py` with a `@tool(...)` decorated
 function, and it is auto-registered on import. Nothing else to touch.

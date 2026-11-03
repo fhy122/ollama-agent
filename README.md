@@ -114,7 +114,10 @@ python ollama_agent.py --ui          # 同上（--port 同样可用）
 | `/` 面板 | 输入框敲 `/` 弹命令面板：**指令**（reset/think）+ **技能**（技能库），↑↓ 选择、Enter 确认、Esc 关闭，支持继续输入过滤 |
 | `@` 上下文 | 输入框敲 `@` 弹文件面板：模糊搜索工作空间文件，选中即附到下一条消息当上下文 |
 | 工作空间文件 | 左侧栏「工作空间文件」分组：列出当前工作空间文件（最多 40 个），点击预览，`刷新`重扫；侧栏收起时一并隐藏 |
-| 打断生成 | 生成中右下角按钮变红色「停止」，点了立即停（含工具循环、等确认的回合）；关页面也会自动停 |
+| 打断生成 | 生成中右下角按钮变红色「停止」，点了立即停（含工具循环、等确认的回合）；**关页面/刷新不再打断**——回合在后端继续跑，回来还能接上（见下「多会话并行」） |
+| 输入队列 | 生成中输入后 Enter **不打断模型，自动排队**（输入框下方出现队列坞，宽度与输入框对齐）：每条可 ✈ 立即注入（走到步边界生效，回答不中断）、✎ 撤回继续编辑、🗑 删除；回合结束剩余消息自动依次续发；队列消息归属各自会话，切走再切回不会错发 |
+| 多会话并行 | 每条对话是独立实例：**一条在生成时可以新建/切到另一条继续聊**，互不抢锁。会话列表实时徽标：● = 正在生成，✦ = 后台跑完待查看（2.5s 轮询），点开即清 |
+| 刷新不断线 | 生成中刷新浏览器（甚至关掉再开）：后端照常跑完整个回合；前端启动先问 `/api/live`，抓到进行中的回合就增量接管画面，已流出的文字不丢 |
 | 模型管理 | 「设置 → 模型管理」两块：**内置**（实时从 Ollama `/api/tags` 列出本机模型，点一下即切过去）+ **自定义**（填 `/v1` 地址 + Key + 模型名，接任意 OpenAI 兼容中转站；可新增/编辑/删除/切换） |
 | 连通性测试 | 新建自定义模型时先点「测试连通性」：只看 `GET /v1/models`，不花对话费；地址错 / Key 错 / 服务没起 / 路径不对**分开报**，每条都给下一步动作 |
 | 模型配置持久化 | 存在 `~/.ollama-agent/config.json`（`OLLAMA_AGENT_CONFIG` 可改路径）。重启后自动回到上次用的那个模型配置，不用重填地址和 Key |
@@ -126,7 +129,11 @@ python ollama_agent.py --ui          # 同上（--port 同样可用）
 
 **会话接口：** `GET /api/sessions`（列表 + 当前会话）、`POST /api/sessions/new|open|delete`、
 `GET /api/sessions/search?q=关键词`（全文搜索，返回 `field` 命中位置 + `snippet` 片段；多词 AND、大小写不敏感；空查询返回空列表而不是全量）。
-正在生成时切换/新建/删除返回 409，先点「停止」再操作。
+生成中**切换/新建照常放行**（并行会话，各自独立实例）；只有**删除**仍返回 409（防误删正在生成的对话）。
+
+**并行会话接口：** `GET /api/statuses`（每条会话 `{busy, attention}`，前端 2.5s 轮询画 ●/✦ 徽标）、
+`GET /api/live`（当前会话进行中回合的事件快照，刷新后增量接管画面用）、
+`POST /api/steer`（往**正在生成**的回合注入一条用户消息，走到下一个步边界生效、不打断模型；回合空闲时返回 `{"error":"idle"}`，前端退化为普通发送）。
 
 **会话存在哪：** 一条对话一个 JSON，默认 `~/.ollama-agent/sessions/<id>.json`（`OLLAMA_AGENT_SESSIONS`
 可改目录，测试靠它隔离）。文件里同时存两份东西：`history` 是喂给模型的完整上下文，`turns` 是
@@ -332,9 +339,9 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 - 交互中 `/ws` 查看、`/ws 新目录` 切换（会重置对话历史，让模型知道新根）
 - 系统提示词会告诉模型当前工作空间在哪，所以直接说"读一下 周报.docx"它就能找对
 
-## 内置工具（18 个，其中 `web_chat` 为私有可选模块）
+## 内置工具（19 个，其中 `web_chat` 为私有可选模块）
 
-> 公开仓库是 **17 个**（`web_chat` 因 ToS 原因不入库，见 `.gitignore`）。复现：
+> 公开仓库是 **18 个**（`web_chat` 因 ToS 原因不入库，见 `.gitignore`）。复现：
 > `python -c "import sys;sys.path.insert(0,'.');import tools;from agent.registry import all_specs;print(len(all_specs()))"`
 
 | 工具 | 功能 | 备注 |
@@ -357,6 +364,7 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 | `web_chat` | **免费网页版 AI 外脑**（文心一言 / 豆包）问答 | 私有可选模块（不入库），需先 `--login` 登录一次 |
 | `skill` | **按需加载技能指令**（SKILL.md 工作流文档） | 见下方技能说明 |
 | `verify` | **按编码规范跑机械判据**：语法编译 / 文档断链 / 文档代码块 compile / 跑测试 | 配套内置技能 `coding-standards`，见下 |
+| `todo_write` | **任务清单外置**：pending / in_progress / completed 三态，整表替换、同时只许一个 in_progress | 跨轮次持久（存 `{工作空间}/.ollama-agent/todo.json`），多步任务先写清单再干活 |
 
 ### 写代码闭环（run_command / grep_file / glob_file / edit_file）
 
@@ -632,6 +640,36 @@ def calculator(ctx: ToolContext, expression: str) -> ToolResult:
 
 写完用 `/tools` 或 `python tests/test_tools.py` 确认注册成功。
 
+## 稳定性与运行可见性
+
+这一批能力参考了 DeepSeek Harness（deepseek-harness）的公开设计，按本项目语义重写：
+
+**断流自动重试。** 流式读数中途断掉（连接重置 / 读超时 / 服务端 5xx / 限流）不再直接把错误甩给用户：
+按错误分类退避重试（1s→2s→4s，上限 8s，带抖动；限流类退避更久），**已流出的半截输出保留**，
+重连后带「从断点继续」的指令接着生成。重试次数 `stream_retries`（默认 3，配置文件可调）。
+
+**读流空闲预算。** 「没反应」多数不是断线，是模型攒工具参数时整整几十秒一个字节不发。
+socket 超时语义是「两块数据之间的间隔」而非总时长：默认空闲预算 120s（环境变量 `OLLAMA_AGENT_IDLE` 可调），
+静默期另有心跳回调给前端刷「已等 N 秒」，超预算才判定断流、走上面的重试。
+
+**repeat-tool-reminder（重复调用提醒）。** 同一工具连续以相同参数反复调用（模型打转的典型症状），
+在阈值 [3, 5, 8] 次时往对话里注入提醒（不否决调用，模型自己决定改道）。
+
+**spill：工具输出落盘。** 工具结果超过 `spill_max_chars`（默认 12000，0=关）时全文写入
+`{工作空间}/.ollama-agent/spill/`，上下文里只留头尾摘要 + 取回指引——几千行的 grep/命令输出不再一次性撑爆 context，
+模型需要时再用 read_file 取回全文（`read_file`/`read_long_doc`/`skill` 的输出豁免，避免套娃）。
+
+**time-context：时间读数注入。** 多步工具循环里模型不知道自己走了多久。从第 2 步起在请求消息里注入
+「[时间上下文] 第 N 步请求采样：… 距基准已过去 X 分 Y 秒」（只在请求时拼入，不写入持久历史；600s 刷新基准），
+模型能据此决定还值不值得继续磨。
+
+**输入队列 + steer。** 见上「Web UI → 输入队列」。生成中排队的消息可走 `/api/steer` 立即注入运行中的回合
+（步边界生效，模型不中断），也可等回合结束自动续发——对应 Harness 的 inbox 双队列设计。
+
+**多会话并行 + 完成通知。** 每条对话 = 独立 agent 实例（共享同一份模型配置），一条在生成时可随意新建/切换别的会话；
+`/api/statuses` 投影每条会话的 busy/attention 状态，后台跑完的会话在列表里亮 ✦，点开即清。
+已知限制：后台会话若弹出执行确认框，没人点就等 5 分钟超时自动拒绝——重要写入还是切回那条会话亲眼看。
+
 ## 工程结构
 
 ```
@@ -648,7 +686,12 @@ ollama-agent/
 │   ├── docgen.py          #   文档生成（CSV/Markdown → 真 xlsx/docx，openpyxl/python-docx）
 │   ├── clipboard.py       #   剪贴板取图/取文件（ctypes Win32 + 标准库 PNG 编码）
 │   ├── hotkeys.py         #   全局热键 Alt+V（RegisterHotKey + 消息循环线程）
-│   ├── loop.py            #   Agent 主循环（多步工具调用、历史图片剥离）
+│   ├── backends/          #   后端抽象：base（读流/空闲预算/心跳）+ ollama / openai_compat
+│   ├── retry.py           #   断流重试（错误分类 + 退避抖动 + 可中断睡眠）
+│   ├── repeat_guard.py    #   重复工具调用提醒（阈值注入，不否决）
+│   ├── spill.py           #   工具输出超限落盘 + 可取回预览（挂在 dispatch 总漏斗）
+│   ├── timectx.py         #   时间读数注入（请求时拼入，不入持久历史）
+│   ├── loop.py            #   Agent 主循环（多步工具调用、历史图片剥离、重试/提醒/时间注入挂钩）
 │   ├── console.py         #   输出/着色/行缓冲
 │   ├── palette.py         #   行内选择面板（/ 指令与技能、@ 文件前缀匹配；msvcrt 读键 + ANSI 重绘）
 │   └── cli.py             #   参数解析 + 交互 REPL + --ui 入口
@@ -660,18 +703,20 @@ ollama-agent/
 │   ├── glob_file.py       #   按文件名模式找文件（*/**/? 通配）
 │   ├── _common.py         #   共享助手（解码/截断/glob→regex/遍历，下划线不注册）
 │   ├── load_image.py      #   图片 base64 喂给视觉模型
+│   ├── render_sheet.py    #   表格渲染成图片（xlsx/xlsm/csv/tsv → PNG）
+│   ├── todo.py            #   任务清单工具（三态整表替换，跨轮次持久化）
 │   ├── clipboard_image.py #   剪贴板截图 → 缓存 → 喂给视觉模型
 │   ├── browse_url.py      #   Playwright 读网页
 │   ├── web_screenshot.py  #   Playwright 截网页/HTML → PNG 喂视觉模型
 │   ├── web_search.py      #   联网搜索（双引擎并行：Bing + 百度AI总结/结果）
-│   └── skill.py           #   技能按需加载（SKILL.md 索引入系统提示词，正文按需读）
+│   ├── skill.py           #   技能按需加载（SKILL.md 索引入系统提示词，正文按需读）
 │   └── verify.py          #   编码规范的机械判据（语法/断链/代码块 compile/跑测试）
 ├── skills/                # 内置技能（随仓库走，任何工作空间都能用）
 │   └── coding-standards/  #   编码与验证规范（配 verify 工具，见「编码规范」）
 │       └── SKILL.md
 ├── webui/                 # Web UI 层（python -m webui）
-│   ├── server.py          #   HTTP 服务（静态页 + JSON API + NDJSON 流，只绑 127.0.0.1）
-│   ├── session.py         #   会话状态（配置热更新、剪贴板暂存队列、回合锁、事件录制）
+│   ├── server.py          #   HTTP 服务（静态页 + JSON API + NDJSON 流 + /api/live|statuses|steer，只绑 127.0.0.1）
+│   ├── session.py         #   会话状态（配置热更新、剪贴板暂存队列、事件录制）+ SessionHub（多会话并行实例管理）
 │   ├── store.py           #   会话持久化（~/.ollama-agent/sessions/*.json 的读/写/列/删）
 │   ├── stream.py          #   StreamEmitter（回合事件 → NDJSON 给浏览器）
 │   └── static/            #   前端三件套（index.html / app.js / style.css，零框架）
@@ -712,6 +757,14 @@ python tests/test_notebook.py         # 主题笔记库：往返无损/FAQ 换�
 python tests/test_ui_sidebar.py       # 侧栏收起展开（Playwright，需装 playwright）
 python tests/test_ui_search.py        # 历史对话搜索（Playwright，需装 playwright）
 python tests/test_ui_reset.py         # 清空/删除对话（Playwright，需装 playwright）
+python tests/test_stream_retry.py     # 断流分类 + 退避重试 + 半截输出续写（假客户端，离线）
+python tests/test_repeat_guard.py     # 重复工具调用提醒（键序无关/阈值/注入时机）
+python tests/test_spill.py            # 工具输出落盘（超限截断/豁免清单/取回预览）
+python tests/test_todo.py             # 任务清单工具（三态/单活跃/持久化）
+python tests/test_time_context.py     # 时间读数注入（第2步起/刷新基准/不入历史）
+python tests/test_steer.py            # 生成中注入（步边界消费/idle 409/用户身份入历史）
+python tests/test_live.py             # 刷新接管（/api/live 快照 + 断连不打断回合）
+python tests/test_parallel.py         # 多会话并行（独立实例/切换不 409/attention 通知）
 python tests/test_cli_palette_console.py   # 行内面板真控制台验证（Windows，需真实控制台）
 ```
 
@@ -728,3 +781,4 @@ python tests/test_cli_palette_console.py   # 行内面板真控制台验证（Wi
 - WebUI 里点 PDF 文件预览会落到「二进制，请下载」——预览面板不解析 PDF，模型读 PDF 走 `read_file`/`load_image` 工具，两者互不影响
 - 剪贴板/热键仅支持 Windows（ctypes Win32）：取图认位图/PNG 格式，取文件认 Ctrl+C 的 CF_HDROP；复制图片**文件**用 Alt+V 走文件路径也行（模型会 load_image）
 - Alt+V 是全局热键，若被其它软件抢先占用，启动时会提示（用 /paste 替代，或 --no-hotkey 关闭）
+- 多会话并行时，后台会话弹出的执行确认框没人点会等 5 分钟超时自动拒绝——写文件等重要操作建议切回那条会话亲眼确认
