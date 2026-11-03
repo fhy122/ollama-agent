@@ -50,6 +50,10 @@ class ConsoleEmitter:
         brief = json.dumps(args, ensure_ascii=False)[:300]
         print(color(f"⚙ 工具调用: {name}({brief})", "green", self.use_color), flush=True)
 
+    def user_message(self, text: str) -> None:
+        """步边界注入的引导消息（输入队列「立即发送」）。"""
+        print(color(f"\n💬 引导: {text}", "cyan", self.use_color), flush=True)
+
     def tool_result(self, name: str, text: str, dt: float,
                     images: list[str] | None = None) -> None:
         preview = text

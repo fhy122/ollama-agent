@@ -407,6 +407,11 @@ def make_handler(app: "WebUIApp"):
             elif path == "/api/stop":
                 app.session.request_stop()
                 self.send_json({"ok": True})
+            elif path == "/api/steer":
+                # 输入队列「立即发送」：空闲时回 409 idle，前端回退为普通发送
+                body = _json_body(self)
+                r = app.session.steer(str(body.get("text") or ""))
+                self.send_json(r, code=int(r.get("code", 200)))
             elif path == "/api/models/probe":
                 self.handle_probe()
             elif path == "/api/models/save":

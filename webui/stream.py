@@ -83,6 +83,10 @@ class StreamEmitter:
     def tool_call(self, name: str, args: dict) -> None:
         self._send({"type": "tool_call", "name": name, "args": args})
 
+    def user_message(self, text: str) -> None:
+        """步边界注入的引导消息（输入队列「立即发送」）。前端渲染用户气泡。"""
+        self._send({"type": "user", "text": text})
+
     def tool_result(self, name: str, text: str, dt: float,
                     images: list[str] | None = None) -> None:
         obj = {"type": "tool_result", "name": name, "text": text, "dt": round(dt, 2)}

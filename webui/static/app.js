@@ -19,6 +19,7 @@ const btnSearchClear = $("btn-search-clear");
 // ---------------- 状态 ----------------
 const state = {
   busy: false,
+  queue: [],    // 输入队列：{id, text, imgs, files}（生成中排队，回合结束自动续发）
   images: [],   // {name, b64}
   files: [],    // {name, path}
   config: {},
@@ -725,6 +726,25 @@ function newAssistantTurn() {
       d.className = "tool";
       d.dataset.tool = name;
       d.dataset.path = (args && (args.path || args.file)) || "";
+      if (name === "todo_write" && Array.isArray(args && args.todos)) {
+        // 任务清单不用 JSON 卡片：直接渲染成勾选列表（args 即完整清单，
+        // 实时与历史回放走同一渲染路径，零新增事件类型）。
+        const icon = { pending: "○", in_progress: "▶", completed: "✓" };
+        const items = args.todos.map((t) => {
+          const s = icon[t.status] || "○";
+          const cls = t.status === "completed" ? " todo-done"
+            : t.status === "in_progress" ? " todo-active" : "";
+          return `<li class="${cls.trim()}"><span class="todo-icon">${s}</span>${esc(t.content || "")}</li>`;
+        }).join("");
+        const active = args.todos.filter((t) => t.status === "in_progress").length;
+        d.innerHTML = `<summary><span class="name">todo_write</span>` +
+          `<span class="args">任务清单 · ${args.todos.length} 项${active ? ` · 进行中 ${active}` : ""}</span>` +
+          `<span class="dt"></span></summary>` +
+          `<div class="body"><ul class="todo-list">${items}</ul></div>`;
+        this.root.appendChild(d);
+        scrollBottom();
+        return d;
+      }
       const brief = esc(JSON.stringify(args)).slice(0, 160);
       d.innerHTML = `<summary><span class="name">${esc(name)}</span>` +
         `<span class="args">${brief}</span><span class="dt"></span></summary>` +
@@ -735,6 +755,12 @@ function newAssistantTurn() {
     },
     finishTool(card, name, text, dt, images) {
       const body = card.querySelector(".body");
+      if (card.dataset.tool === "todo_write") {
+        // 清单本体已在 tool_call 渲染成勾选列表，tool_result 只是计数回执，
+        // 不能用回执文本覆盖掉清单。
+        card.querySelector(".dt").textContent = `${dt}s`;
+        return;
+      }
       body.textContent = text.length > 4000 ? text.slice(0, 4000) + "\n…[截断]" : text;
       card.querySelector(".dt").textContent = `${dt}s`;
       const path = card.dataset.path;
@@ -821,16 +847,92 @@ async function stopGeneration() {
 
 async function sendMessage() {
   const text = inputEl.value.trim();
-  if (state.busy) return;
+  if (state.busy) {                       // 生成中 Enter/发送 → 排队，不打断模型
+    enqueueCurrent();
+    return;
+  }
   if (!text && !state.images.length && !state.files.length) return;
-  closePal();
-
   const imgs = state.images.slice();
   const files = state.files.slice();
-  addUserMsg(text, imgs, files);
   inputEl.value = "";
   autoGrow();
   clearAttachments();
+  await runTurnStream(text, imgs, files);
+}
+
+// ---------------- 输入队列（生成中排队，参考 DeepSeek Harness inbox）----------------
+// 队列在前端：撤回编辑/删除纯本地；「立即发送」走 /api/steer 注入运行中的回合
+//（步边界生效，模型不中断）；回合结束自动依次续发。
+
+function enqueueCurrent() {
+  const text = inputEl.value.trim();
+  if (!text && !state.images.length && !state.files.length) return;
+  state.queue.push({
+    id: `q${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+    text,
+    imgs: state.images.slice(),
+    files: state.files.slice(),
+  });
+  inputEl.value = "";
+  autoGrow();
+  clearAttachments();
+  renderQueue();
+  toast("已排队，本回合结束后自动发送；点 ✈ 可立即注入");
+}
+
+function renderQueue() {
+  const dock = $("queue-dock");
+  if (!dock) return;
+  dock.innerHTML = state.queue.map((q) =>
+    `<div class="queue-item" data-id="${q.id}">` +
+    `<span class="q-text">${esc(q.text || "[附件]")}</span>` +
+    `<span class="q-actions">` +
+    `<button class="q-btn" data-act="steer" title="立即发送（注入正在进行的回答，不打断）">✈</button>` +
+    `<button class="q-btn" data-act="edit" title="撤回继续编辑">✎</button>` +
+    `<button class="q-btn q-del" data-act="del" title="删除">🗑</button>` +
+    `</span></div>`).join("");
+}
+
+async function steerQueued(id) {
+  const i = state.queue.findIndex((q) => q.id === id);
+  if (i < 0) return;
+  const q = state.queue[i];
+  const r = await api("/api/steer", { text: q.text });
+  if (r.error === "idle") {
+    // 回合恰好结束了 → 退化为普通发送（带附件原样走）
+    state.queue.splice(i, 1);
+    renderQueue();
+    await runTurnStream(q.text, q.imgs, q.files);
+    return;
+  }
+  if (r.error) return toast(r.error, true);
+  state.queue.splice(i, 1);
+  renderQueue();
+  // 用户气泡由后端 user 事件统一渲染（实时与回放同一路径）
+}
+
+function editQueued(id) {
+  const i = state.queue.findIndex((q) => q.id === id);
+  if (i < 0) return;
+  const q = state.queue[i];
+  state.queue.splice(i, 1);
+  renderQueue();
+  inputEl.value = q.text;
+  autoGrow();
+  inputEl.focus();
+  if (q.imgs.length || q.files.length) toast("该条附带的图片/文件不随撤回恢复");
+}
+
+function pumpQueue() {
+  if (state.busy || !state.queue.length) return;
+  const q = state.queue.shift();
+  renderQueue();
+  runTurnStream(q.text, q.imgs, q.files);
+}
+
+async function runTurnStream(text, imgs, files) {
+  closePal();
+  addUserMsg(text, imgs, files);
   setBusy(true);
   abortCtl = new AbortController();
 
@@ -878,6 +980,7 @@ async function sendMessage() {
     setBusy(false);
     scrollBottom();
     loadSessions();          // 标题/排序可能变了
+    pumpQueue();             // 队列非空 → 自动续发下一条（串行，直到排空）
   }
 }
 
@@ -954,6 +1057,10 @@ function applyEvent(turn, ev) {
       turn.renderStream();
       break;
     }
+    case "user":
+      // 步边界注入的引导消息（输入队列「立即发送」）——实时与历史回放同一路径
+      addUserMsg(ev.text || "", [], []);
+      break;
     case "confirm":
       askConfirm(ev);
       break;
@@ -1695,6 +1802,18 @@ function openCodePreview(lang, text) {
 
 // ---------------- 事件绑定 ----------------
 btnSend.onclick = sendMessage;
+$("queue-dock").addEventListener("click", (e) => {
+  const btn = e.target.closest(".q-btn");
+  const item = e.target.closest(".queue-item");
+  if (!btn || !item) return;
+  const id = item.dataset.id;
+  if (btn.dataset.act === "steer") steerQueued(id);
+  else if (btn.dataset.act === "edit") editQueued(id);
+  else if (btn.dataset.act === "del") {
+    state.queue = state.queue.filter((q) => q.id !== id);
+    renderQueue();
+  }
+});
 inputEl.addEventListener("keydown", (e) => {
   if (pal.open && pal.flat.length) {
     if (e.key === "ArrowDown") {

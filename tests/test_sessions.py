@@ -36,7 +36,7 @@ def _emitter():
     return StreamEmitter(io.BytesIO())
 
 
-def _fake_run_turn(client, cfg, ctx, history, text, images, emitter=None, cancel=None):
+def _fake_run_turn(client, cfg, ctx, history, text, images, emitter=None, cancel=None, steer=None):
     """替身：走一遍「文字 + 工具卡片 + 统计」，把 history 也补上。"""
     emitter.step(1)
     emitter.text("你说的是：")

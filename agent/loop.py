@@ -174,11 +174,13 @@ def new_history(workspace: str | None = None) -> list:
 
 def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
              history: list, user_text: str, images: list[str] | None = None,
-             emitter=None, cancel=None) -> str:
+             emitter=None, cancel=None, steer=None) -> str:
     """跑一个用户回合（含多轮工具调用），返回最终回答。
 
     emitter: 事件发射器；缺省用 ConsoleEmitter（终端输出）。
     cancel:  可选 threading.Event；置位后打断本轮（停流式生成、跳过未执行工具）。
+    steer:   可选可调用，返回待注入的引导消息列表（输入队列「立即发送」）。
+             每个步边界消费一次：消息以 user 身份追加进历史，模型不中断。
     """
     if emitter is None:
         emitter = ConsoleEmitter(cfg)
@@ -254,6 +256,15 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
             if pending_reminders:
                 history.extend(pending_reminders)
                 pending_reminders.clear()
+            # 输入队列的「立即发送」（steering，参考 DSH next-step 队列）：
+            # 步边界消费，user 身份入历史 + 前端气泡事件——模型不中断，
+            # 下一次请求自然看到引导。步边界 = 当前步工具已执行完、请求未发出。
+            if steer:
+                for s in steer():
+                    if not s:
+                        continue
+                    history.append({"role": "user", "content": s})
+                    emitter.user_message(s)
             # ---- 调用模型（断流自动重试，设计参考 DSH dsh-llm-retry）----
             # 空输出失败（没吐一个字就断）→ 历史未动，退避后干净重跑；
             # 半截输出失败 → 已生成部分先入历史，注入「从中断处继续」后自动续写

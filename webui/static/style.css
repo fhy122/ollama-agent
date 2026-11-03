@@ -1153,3 +1153,31 @@ details.think .body { font-family: inherit; font-size: 13px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ---- todo_write 任务清单卡片 ---- */
+.todo-list { list-style: none; margin: 0; padding: 2px 0 2px 4px; }
+.todo-list li { padding: 3px 0; display: flex; align-items: baseline; gap: 8px; }
+.todo-icon { flex: none; width: 1.1em; text-align: center; }
+.todo-list li.todo-done { opacity: .55; text-decoration: line-through; }
+.todo-list li.todo-active { font-weight: 600; }
+.todo-list li.todo-active .todo-icon { color: var(--accent, #4a9eff); }
+
+/* ---- 输入队列（生成中排队）---- */
+#queue-dock { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.queue-item {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--tool-bg, #f6f7f9); border: 1px solid var(--tool-border, #e3e5e8);
+  border-radius: 10px; padding: 8px 12px;
+}
+.queue-item .q-text {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; color: var(--fg, #1c1e21);
+}
+.queue-item .q-actions { flex: none; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.queue-item:hover .q-actions { opacity: 1; }
+.q-btn {
+  border: none; background: none; cursor: pointer; font-size: 14px;
+  padding: 4px 6px; border-radius: 6px; color: var(--fg-muted, #6b7280); line-height: 1;
+}
+.q-btn:hover { background: rgba(0,0,0,.07); color: var(--fg, #1c1e21); }
+.q-btn.q-del:hover { color: #d64545; }

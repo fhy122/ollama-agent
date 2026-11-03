@@ -109,6 +109,10 @@ class RecordingEmitter:
         self._push({"type": "tool_call", "name": name, "args": args})
         self._inner.tool_call(name, args)
 
+    def user_message(self, text: str) -> None:
+        self._push({"type": "user", "text": text})
+        self._inner.user_message(text)
+
     def tool_result(self, name: str, text: str, dt: float,
                     images: list[str] | None = None) -> None:
         self._push({"type": "tool_result", "name": name, "text": text,
@@ -243,6 +247,7 @@ class AgentSession:
         self.lock = threading.Lock()
         self.cancel_event = threading.Event()   # 打断开关：置位即停当前回合
         self.pending_clip: "queue.Queue[dict]" = queue.Queue()  # 热键剪贴板暂存
+        self._steer_q: "queue.Queue[str]" = queue.Queue()  # 输入队列「立即发送」的引导消息
 
         # ---- 会话持久化 ----
         self.store = store or SessionStore()
@@ -524,6 +529,7 @@ class AgentSession:
         if self._busy():
             return {"error": "正在生成，先停止本轮回答再切换对话", "code": 409}
         with self.lock:
+            self._drain_steer()          # 换对话了，旧队列里排着的引导不再适用
             data = self.store.load(sid)
             if not data:
                 return {"error": "对话不存在或已被删除", "code": 404}
@@ -563,6 +569,7 @@ class AgentSession:
     def delete_session(self, sid: str) -> dict:
         if self._busy():
             return {"error": "正在生成，先停止本轮回答再删除对话", "code": 409}
+        self._drain_steer()              # 删的是当前对话时队列同步作废
         ok = self.store.delete(sid)
         if sid == self.sid:
             with self.lock:
@@ -597,13 +604,36 @@ class AgentSession:
             try:
                 return run_turn(self.client, self.cfg, self.ctx, self.history,
                                 text, images, emitter=rec,
-                                cancel=self.cancel_event)
+                                cancel=self.cancel_event, steer=self._drain_steer)
             finally:
                 self.ctx.ask = None
                 if self.title in ("", UNTITLED):
                     self.title = make_title(user_turn["text"])
                 self._save()
 
+
+    def _drain_steer(self) -> list[str]:
+        """回合线程在步边界调用：取走全部待注入的引导消息。"""
+        out: list[str] = []
+        while True:
+            try:
+                out.append(self._steer_q.get_nowait())
+            except queue.Empty:
+                return out
+
+    def steer(self, text: str) -> dict:
+        """输入队列「立即发送」：消息注入运行中的回合（步边界生效），不打断模型。
+
+        HTTP 线程调用，不取会话锁（回合线程正持锁）。空闲时返回 idle，
+        前端回退为普通发送。
+        """
+        text = (text or "").strip()
+        if not text:
+            return {"error": "空消息", "code": 400}
+        if not self._busy():
+            return {"error": "idle", "code": 409}
+        self._steer_q.put(text)
+        return {"ok": True}
 
     def request_stop(self) -> None:
         """打断当前回合（HTTP 线程调用，不取会话锁，可与持锁的回合线程并行）。
@@ -617,6 +647,7 @@ class AgentSession:
         而会话锁一直没释放，界面上新建/切换对话都会被 409 挡回。
         """
         self.cancel_event.set()
+        self._drain_steer()              # 滞留的引导消息随回合一起作废
         try:
             self.client.abort()          # 立刻断开 → 阻塞的读循环抛异常返回
         except Exception:
