@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 
 from agent import HIDDEN_DIRNAME
 from agent.config import THINK_VALUES, AgentConfig
-from webui.session import AgentSession
+from webui.session import SessionHub
 from webui.stream import StreamEmitter
 
 import tools as tools_pkg
@@ -348,6 +348,12 @@ def make_handler(app: "WebUIApp"):
                 self.send_json(_full_config(app))
             elif path == "/api/pending":
                 self.send_json({"items": app.session.drain_clip()})
+            elif path == "/api/live":
+                # 刷新/重连后接管进行中的回合（前端轮询增量渲染）
+                self.send_json(app.session.live())
+            elif path == "/api/statuses":
+                # 会话列表运行态（busy=生成中 / attention=后台完成待查看）
+                self.send_json({"statuses": app.session.statuses()})
             elif path == "/api/skills":
                 from tools.skill import list_skills
                 self.send_json({"skills": list_skills(str(app.session.workspace))})
@@ -479,8 +485,9 @@ def make_handler(app: "WebUIApp"):
             self.send_header("Connection", "close")
             self.end_headers()
 
-            emitter = StreamEmitter(self.wfile,
-                                    on_disconnect=app.session.request_stop)
+            # 断连（刷新/关页）不再打断回合：回合线程照跑、事件照记，
+            # 前端回来走 /api/live 接管。打断只走显式的 /api/stop。
+            emitter = StreamEmitter(self.wfile)
             if not message and not images and not files:
                 emitter.notice("空消息")
                 emitter._send({"type": "done", "text": ""})
@@ -670,7 +677,7 @@ class WebUIApp:
     """UI 应用：持有会话 + HTTP 服务 + 可选全局热键。"""
 
     def __init__(self, cfg: AgentConfig, host: str = "127.0.0.1", port: int = 8888):
-        self.session = AgentSession(cfg)
+        self.session = SessionHub(cfg)   # 多会话并行：每条对话独立实例各自跑
         self.host = host
         self.port = port
         self.httpd: ThreadingHTTPServer | None = None

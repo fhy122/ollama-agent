@@ -409,13 +409,20 @@ function renderSessionList(list, currentId) {
     sessionListEl.innerHTML = '<p class="sb-empty">还没有历史对话</p>';
     return;
   }
-  sessionListEl.innerHTML = state.sessions.map((s) =>
-    `<div class="ss-item${s.id === currentId ? " active" : ""}" data-id="${esc(s.id)}">` +
-    `<button class="ss-main" data-open="${esc(s.id)}" title="${esc(s.title)}">` +
-    `<span class="ss-title">${esc(s.title)}</span>` +
-    `<span class="ss-time">${fmtWhen(s.updated)}</span></button>` +
-    `<button class="ss-del" data-del="${esc(s.id)}" title="删除这条对话" aria-label="删除对话">×</button>` +
-    "</div>").join("");
+  const st = state.statuses || {};
+  sessionListEl.innerHTML = state.sessions.map((s) => {
+    const b = st[s.id] || {};
+    // 并行会话通知（参考 DSH agent/status 投影）：●=生成中 ✦=后台完成待查看
+    const badge = b.busy
+      ? '<span class="ss-badge ss-run" title="正在生成">●</span>'
+      : (b.attention ? '<span class="ss-badge ss-done" title="已完成，点开查看">✦</span>' : "");
+    return `<div class="ss-item${s.id === currentId ? " active" : ""}" data-id="${esc(s.id)}">` +
+      `<button class="ss-main" data-open="${esc(s.id)}" title="${esc(s.title)}">` +
+      `<span class="ss-title">${badge}${esc(s.title)}</span>` +
+      `<span class="ss-time">${fmtWhen(s.updated)}</span></button>` +
+      `<button class="ss-del" data-del="${esc(s.id)}" title="删除这条对话" aria-label="删除对话">×</button>` +
+      "</div>";
+  }).join("");
 }
 
 async function loadSessions() {
@@ -537,22 +544,40 @@ function replayTurns(turns) {
 }
 
 async function openSessionById(id) {
-  if (state.busy) return toast("正在生成，先点停止", true);
   if (id === state.sid && messagesEl.querySelector(".msg")) return;
   const r = await api("/api/sessions/open", { id });
   if (r.error) return toast(r.error, true);
+  detachStream(r.id);                // 旧会话的流若有，转孤儿：渲染与 busy 都让位
   state.sid = r.id;
+  setBusy(false);                    // busy 属于「正在看的会话」；目标忙则下面 attachLive 再置回
   clearView();
-  replayTurns(r.turns);
+  const turns = r.turns || [];
+  if (r.busy) {
+    // 目标会话正在后台生成：不回放最后一轮，交给 attachLive 从快照接管
+    const cut = turns.length && turns[turns.length - 1].role === "assistant"
+      ? turns.length - 1 : turns.length;
+    replayTurns(turns.slice(0, cut));
+    const live = await fetch("/api/live").then((x) => x.json()).catch(() => null);
+    if (live && live.busy) {
+      attachLive(live, turns.slice(cut));
+    } else {
+      // 接管前恰好跑完：补画被切掉的最后一轮
+      replayTurns(turns.slice(cut));
+    }
+  } else {
+    replayTurns(turns);
+  }
   await loadSessions();
   closeSidebarIfMobile();
 }
 
 async function newChat() {
-  if (state.busy) return toast("正在生成，先点停止", true);
+  // 并行：当前在生成也放行——它转后台继续跑，列表上会挂「生成中 ●」
   const r = await api("/api/sessions/new", {});
   if (r.error) return toast(r.error, true);
+  detachStream(r.id || "");          // 旧会话的流转孤儿：事件不再渲染、busy 让位
   state.sid = r.id || "";
+  setBusy(false);                    // 新对话是空闲的；旧流在后端照跑
   clearView();
   await loadSessions();
   closeSidebarIfMobile();
@@ -812,6 +837,16 @@ function newAssistantTurn() {
 
 // ---------------- 发送 + 流式接收 + 可打断 ----------------
 let abortCtl = null;
+// 流的会话归属：runTurnStream / attachLive 各自认领。切换会话时旧流标记为
+// 孤儿（detached）——它的事件不再渲染（回合在后端照跑，回来看走 /api/live
+// 接管），也不再抢全局 busy，否则新会话的第一条消息会被误判成「生成中排队」，
+// 永远发不出去（实测：忙时点「新对话」，新会话发消息全进了队列坞）。
+let streamSid = "";
+let streamDetached = false;
+
+function detachStream(newSid) {
+  if (streamSid && streamSid !== newSid) streamDetached = true;
+}
 
 function setBusy(busy) {
   state.busy = busy;
@@ -869,6 +904,7 @@ function enqueueCurrent() {
   if (!text && !state.images.length && !state.files.length) return;
   state.queue.push({
     id: `q${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+    sid: state.sid,        // 归属会话：切换后只回该会话才续发/注入
     text,
     imgs: state.images.slice(),
     files: state.files.slice(),
@@ -897,6 +933,9 @@ async function steerQueued(id) {
   const i = state.queue.findIndex((q) => q.id === id);
   if (i < 0) return;
   const q = state.queue[i];
+  if (q.sid !== state.sid) {
+    return toast("该消息属于另一条对话，切回去再注入", true);
+  }
   const r = await api("/api/steer", { text: q.text });
   if (r.error === "idle") {
     // 回合恰好结束了 → 退化为普通发送（带附件原样走）
@@ -925,9 +964,73 @@ function editQueued(id) {
 
 function pumpQueue() {
   if (state.busy || !state.queue.length) return;
-  const q = state.queue.shift();
+  const idx = state.queue.findIndex((q) => q.sid === state.sid);
+  if (idx < 0) return;              // 队列里都是别的会话的消息：不抢发
+  const q = state.queue.splice(idx, 1)[0];
   renderQueue();
   runTurnStream(q.text, q.imgs, q.files);
+}
+
+// 刷新后接管进行中的回合：后端断开连接不再打断（事件照记），前端轮询
+// /api/live 拿事件快照做增量渲染，接上刷新前的画面直到回合结束。
+// first = boot 时拿到的首个快照，作为增量基线（该部分尚未被回放渲染）。
+// fallbackTurns = 接管前回合恰好结束时要补画的最后一轮（正常为空数组）。
+async function attachLive(first, fallbackTurns = []) {
+  setBusy(true);
+  abortCtl = new AbortController();
+  streamSid = state.sid;
+  streamDetached = false;
+  const turn = newAssistantTurn();
+  let drawn = 0;
+  let prev = (first && first.events) || [];
+  let fails = 0;
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  while (true) {
+    await sleep(600);
+    let r;
+    try {
+      r = await fetch("/api/live").then((x) => x.json());
+      fails = 0;
+    } catch {
+      if (++fails > 20) {
+        const el = turn.ensureText();
+        el.dataset.raw = (el.dataset.raw || "") + "\n[错误] 与服务端失去联系，回合可能仍在后台运行";
+        turn.renderStream();
+        break;
+      }
+      continue;
+    }
+    if (!r.busy) break;
+    const evs = r.events || [];
+    for (let i = 0; i < evs.length; i++) {
+      const ev = evs[i];
+      if (i < prev.length) {
+        // 旧位置：RecordingEmitter 对 text/think 逐 token 合并，只有变长的
+        // 那个（同位置、同类型）需要补增量，其余早已渲染过且不可变。
+        // 注意不能只看「新增的下标」——两快照间只变长不加新事件时数量不变。
+        const old = prev[i];
+        if (old && old.type === ev.type && (ev.type === "text" || ev.type === "think") &&
+            (ev.text || "").length > (old.text || "").length) {
+          applyEvent(turn, Object.assign({}, ev, { text: ev.text.slice((old.text || "").length) }));
+        }
+      } else {
+        applyEvent(turn, ev);
+        drawn++;
+      }
+    }
+    prev = evs;
+  }
+  if (!drawn && !prev.length && fallbackTurns.length) {
+    // 接管前回合已结束且一无所获：收掉空盒，补画真实内容
+    turn.root.remove();
+    replayTurns(fallbackTurns);
+  } else {
+    turn.finalize();
+  }
+  setBusy(false);
+  scrollBottom();
+  loadSessions();
+  pumpQueue();
 }
 
 async function runTurnStream(text, imgs, files) {
@@ -935,6 +1038,8 @@ async function runTurnStream(text, imgs, files) {
   addUserMsg(text, imgs, files);
   setBusy(true);
   abortCtl = new AbortController();
+  streamSid = state.sid;
+  streamDetached = false;
 
   const turn = newAssistantTurn();
   try {
@@ -964,18 +1069,28 @@ async function runTurnStream(text, imgs, files) {
         if (!line) continue;
         let ev;
         try { ev = JSON.parse(line); } catch { continue; }
+        if (streamDetached) continue;      // 已切走：事件由 /api/live 接管渲染
         applyEvent(turn, ev);
       }
     }
   } catch (e) {
-    const el = turn.ensureText();
-    if (e.name === "AbortError") {
-      el.dataset.raw = (el.dataset.raw || "") + "\n\n[⏹ 已打断]";
-    } else {
-      el.dataset.raw = (el.dataset.raw || "") + `\n[错误] ${e.message}`;
+    if (!streamDetached) {
+      const el = turn.ensureText();
+      if (e.name === "AbortError") {
+        el.dataset.raw = (el.dataset.raw || "") + "\n\n[⏹ 已打断]";
+      } else {
+        el.dataset.raw = (el.dataset.raw || "") + `\n[错误] ${e.message}`;
+      }
+      turn.renderStream();
     }
-    turn.renderStream();
   } finally {
+    if (streamDetached) {
+      // 孤儿流收尾：回合在后端照常落盘，列表刷新一下（标题/排序）即可；
+      // 绝不能动全局 busy/pump——那是新会话视图的状态
+      streamDetached = false;
+      loadSessions();
+      return;
+    }
     turn.finalize();
     setBusy(false);
     scrollBottom();
@@ -1197,6 +1312,37 @@ async function pollPending() {
       (item.files || []).forEach((p) => addFileAttachment(p.split(/[\\/]/).pop(), p));
       if (item.image || (item.files || []).length) toast("Alt+V：剪贴板内容已带入对话");
     });
+  } catch { /* 忽略 */ }
+}
+
+// 并行会话运行态轮询：会话列表上的「生成中 ●」「已完成 ✦」徽标。
+// 状态签名没变就不重画，避免每 2.5s 重置列表的悬停/滚动状态。
+let statusesSig = "";
+async function pollStatuses() {
+  try {
+    const r = await api("/api/statuses");
+    const st = r.statuses || {};
+    // 本页打开之后新建的会话（或后台刚落盘的）不在 state.sessions 里，
+    // 而徽标挂在 renderSessionList(state.sessions) 上——列表不更新，
+    // 「后台完成 ✦」就永远没地方显示（实测坑：新会话在后台跑完不出徽标）。
+    // 所以会话集合变了就重拉一次列表；平时仍只用本地状态重画，
+    // 不动悬停/滚动，也不打断搜索结果。
+    const ids = Object.keys(st);
+    const known = new Set(state.sessions.map((s) => s.id));
+    const listChanged = ids.length !== state.sessions.length
+      || ids.some((i) => !known.has(i));
+    if (listChanged) {
+      const lr = await api("/api/sessions").catch(() => null);
+      if (lr) {
+        state.sessions = lr.sessions || [];
+        state.sid = (lr.current && lr.current.id) || state.sid;
+      }
+    }
+    const sig = JSON.stringify(st);
+    if (sig === statusesSig && !listChanged) return;
+    statusesSig = sig;
+    state.statuses = st;
+    renderSessionList(state.sessions, state.sid);
   } catch { /* 忽略 */ }
 }
 
@@ -2080,12 +2226,24 @@ if (window.innerWidth <= 900 || savedSb === "0") setSidebar(false);
 
 (async function boot() {
   const r = await loadSessions();
-  // 后端会自动接上最近一次对话，这里把它画出来
-  if (r && r.current && (r.current.turns || []).length) replayTurns(r.current.turns);
+  // 刷新时回合可能还在跑（后端不再因断连打断）：先问 /api/live
+  const live = await fetch("/api/live").then((x) => x.json()).catch(() => null);
+  const turns = (r && r.current && r.current.turns) || [];
+  if (live && live.busy) {
+    // 进行中的回合交给 attachLive 从快照完整接管（否则回放+增量会画两份）
+    const cut = turns.length && turns[turns.length - 1].role === "assistant"
+      ? turns.length - 1 : turns.length;
+    replayTurns(turns.slice(0, cut));
+    attachLive(live, turns.slice(cut));
+  } else if (turns.length) {
+    // 后端会自动接上最近一次对话，这里把它画出来
+    replayTurns(turns);
+  }
 })();
 loadConfig();
 loadSkills();
 loadWorkspaceFiles();
 setInterval(pollPending, 2500);
+setInterval(pollStatuses, 2500);   // 并行会话：列表徽标（生成中/后台完成）
 autoGrow();
 inputEl.focus();

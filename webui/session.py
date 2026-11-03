@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from agent.backends import create_client
-from agent.config import DEFAULT_HOST, MAX_CTX, THINK_VALUES, AgentConfig
+from agent.config import DEFAULT_HOST, DEFAULT_MODEL, MAX_CTX, THINK_VALUES, AgentConfig
 from agent.loop import new_history, run_turn
 from agent.registry import ToolContext
 from agent.userconfig import BUILTIN_ID, ConfigStore, mask_key, to_agent_patch
@@ -219,14 +219,29 @@ class AgentSession:
     """一个对话会话。HTTP 线程通过 lock 串行跑回合；同一时刻只打开一条对话。"""
 
     def __init__(self, cfg: AgentConfig, store: SessionStore | None = None,
-                 config_store: ConfigStore | None = None):
-        # ---- 用户配置（模型配置持久化）----
-        # 必须在造 client 之前读：要拿上次最后用的那个 profile 覆盖 cfg，
-        # 否则重启后永远回到默认的 qwen3.5:9b，用户每次都要重填中转站地址和 Key。
+                 config_store: ConfigStore | None = None,
+                 shared: dict | None = None, load_sid: str = ""):
+        """一条对话会话。
+
+        shared=None：主实例（启动路径，行为与旧版单会话一致——恢复 profile、
+        接上最近一次对话）。
+        shared=dict：SessionHub 造的并行会话实例——共享同一 user_cfg/cfg 对象
+        （任何实例改配置全部实例可见），load_sid 指定加载哪条历史（空串=全新
+        对话），不走「恢复最近对话」。
+        """
         self.config_store = config_store or ConfigStore()
-        self.user_cfg = self.config_store.load()
+        self.user_cfg = self.config_store.load() if shared is None else shared["user_cfg"]
         self.cfg = cfg
-        self._restore_profile()
+        self._shared = shared
+        if not hasattr(cfg, "_boot_model"):
+            # 启动时的默认模型名（--model / DEFAULT_MODEL）。_apply_builtin
+            # 从中转站切回时若当前模型名在本地 Ollama 不存在，回落到它。
+            # 挂在共享的 cfg 对象上：并行会话实例共用同一个 cfg。
+            cfg._boot_model = cfg.model
+        if shared is None:
+            # 必须在造 client 之前读：要拿上次最后用的那个 profile 覆盖 cfg，
+            # 否则重启后永远回到默认的 qwen3.5:9b，用户每次都要重填中转站地址和 Key。
+            self._restore_profile()
 
         self.client = create_client(cfg)
         self.workspace = Path(cfg.workspace) if cfg.workspace else Path.cwd()
@@ -248,6 +263,9 @@ class AgentSession:
         self.cancel_event = threading.Event()   # 打断开关：置位即停当前回合
         self.pending_clip: "queue.Queue[dict]" = queue.Queue()  # 热键剪贴板暂存
         self._steer_q: "queue.Queue[str]" = queue.Queue()  # 输入队列「立即发送」的引导消息
+        self._live: list | None = None   # 运行中回合的事件列表（刷新后 /api/live 接管用）
+        self.attention = False           # 后台完成待查看 → 会话列表通知徽标
+        self.on_turn_end = None          # Hub 注入：回合结束回调（打通知标记用）
 
         # ---- 会话持久化 ----
         self.store = store or SessionStore()
@@ -255,7 +273,18 @@ class AgentSession:
         self.title = UNTITLED
         self.created = time.time()
         self.turns: list[dict] = []
-        self._resume_or_create()
+        if shared is None:
+            self._resume_or_create()
+        elif load_sid:
+            data = self.store.load(load_sid)
+            if data:
+                self._apply(data)
+                ws = str(data.get("workspace") or "")
+                if ws and Path(ws).is_dir() and not _same_ws(ws, str(self.workspace)):
+                    # 会话跟着它自己的工作空间走（历史里的相对路径才对得上）；
+                    # 只改实例侧，不碰共享 cfg——别的会话可能是别的工作空间
+                    self.workspace = Path(ws)
+                    self.ctx.workspace = self.workspace
 
     # ---------- 模型配置（profile）管理 ----------
 
@@ -414,10 +443,15 @@ class AgentSession:
         return self.snapshot()
 
     def _apply_builtin(self) -> None:
-        """切回内置 Ollama：只把协议改回 ollama，地址/模型沿用当前值。
+        """切回内置 Ollama：协议改回 ollama；模型名本地不存在时回落启动默认值。
 
-        不重置 model 是有意的 —— 用户可能刚在本地模型列表里点了某个模型名，
+        不盲目重置 model 是有意的 —— 用户可能刚在本地模型列表里点了某个模型名，
         切回去就该还是那个，而不是被塞回写死的默认值。
+        但「从自定义 profile 切回/删除生效项回落」时，当前 model 来自那个
+        profile（实测：中转站模型名必然 404；Ollama 协议指向别的实例时同样
+        可能不存在），回合会异常结束、当时的提示只在流里闪过，刷新后回放是
+        空回合。所以切回内置时总查一次 /api/tags（激活/删除是低频操作，
+        4 秒预算可接受）：当前模型名不在本地列表 → 回落启动默认模型。
         """
         patch = {
             "provider": "ollama",
@@ -428,7 +462,21 @@ class AgentSession:
             "workspace": "",
             "confirm": self.confirm,
         }
+        local = self._local_model_names(patch["host"])
+        if local and patch["model"] not in local:
+            patch["model"] = getattr(self.cfg, "_boot_model", "") or DEFAULT_MODEL
         self.update_config(patch)
+
+    def _local_model_names(self, host: str) -> set[str]:
+        """本地 Ollama 的模型名集合；读不到返回空集合（此时不乱动模型名）。"""
+        try:
+            from agent.backends.ollama import OllamaClient
+            tmp = AgentConfig()
+            tmp.provider = "ollama"
+            tmp.host = host or DEFAULT_HOST
+            return set(_list_models_with_budget(OllamaClient(tmp), 4.0))
+        except Exception:
+            return set()
 
     def delete_profile(self, pid: str) -> dict:
         with self.lock:
@@ -590,6 +638,11 @@ class AgentSession:
                 self.created = time.time()
             self.gate.reset()
             self.cancel_event.clear()
+            if self._shared is not None:
+                # 并行会话：确认开关以共享 user_cfg 为准（设置面板可能在别的
+                # 会话上下文里改过；主实例由 update_config 自己同步）
+                self.confirm = bool(
+                    (self.user_cfg.get("ui") or {}).get("confirm", True))
             self.ctx.confirm = self.confirm
             self.ctx.ask = lambda what: self._ask(what, emitter)
             user_turn = {
@@ -600,16 +653,31 @@ class AgentSession:
             }
             events: list[dict] = []
             self.turns.extend([user_turn, {"role": "assistant", "events": events}])
+            self._live = events               # /api/live 快照源：运行中回合的事件
+            self._save()                      # 立刻落盘：后台跑也能在列表里看到这条
             rec = RecordingEmitter(emitter, events)
             try:
                 return run_turn(self.client, self.cfg, self.ctx, self.history,
                                 text, images, emitter=rec,
                                 cancel=self.cancel_event, steer=self._drain_steer)
+            except Exception as e:
+                # FATAL 类错误（模型名不存在 / Key 错 / 参数错）会从 run_turn 一路
+                # 抛上来。handle_chat 会把它弹成 toast，但 toast 一闪就没——
+                # 不录进事件流的话，刷新后回放这条回合只剩空白，原因无从查起。
+                rec.notice(f"[⚠ 本轮异常结束：{type(e).__name__}: {str(e)[:200]}]")
+                raise
             finally:
+                self._live = None
                 self.ctx.ask = None
                 if self.title in ("", UNTITLED):
                     self.title = make_title(user_turn["text"])
                 self._save()
+                cb = self.on_turn_end         # Hub 据此给后台完成的会话打通知标记
+                if cb:
+                    try:
+                        cb(self)
+                    except Exception:
+                        pass
 
 
     def _drain_steer(self) -> list[str]:
@@ -634,6 +702,19 @@ class AgentSession:
             return {"error": "idle", "code": 409}
         self._steer_q.put(text)
         return {"ok": True}
+
+    def live(self) -> dict:
+        """刷新/重连后接管进行中的回合：返回已记录事件的快照。
+
+        浏览器刷新只是断开 HTTP 流，回合线程照跑、事件照记（RecordingEmitter
+        同步写进 turns）。前端拿 busy/events 轮询增量渲染，接上刷新前的画面。
+        事件列表由回合线程追加、这里只读快照——CPython list 追加/浅拷贝原子，
+        text/think 合并改的是尾元素内容，前端按「同位置比长度」取增量即可。
+        """
+        live = self._live
+        if live is None:
+            return {"busy": False}
+        return {"busy": True, "events": list(live)}
 
     def request_stop(self) -> None:
         """打断当前回合（HTTP 线程调用，不取会话锁，可与持锁的回合线程并行）。
@@ -873,3 +954,110 @@ class AgentSession:
                 out.append(self.pending_clip.get_nowait())
             except queue.Empty:
                 return out
+
+
+class SessionHub:
+    """多会话并行：每条对话一个 AgentSession 实例，各自持锁、各自线程跑回合。
+
+    设计参考 DeepSeek Harness：每条会话是独立 agent 实例（ctx.agents 的实时
+    句柄注册表），agent/status running→idle 的迁移对外可见；客户端看 A 时 B
+    在后台跑，turn/end 落日志后列表即知。
+
+    server 侧通过 __getattr__ 把未显式定义的调用（run/steer/live/stop/
+    update_config/profiles/...）代理给「当前会话」——用户对哪条对话操作，
+    哪条就是当前；后台实例不受影响。切换视图永不因忙碌被拒（这正是并行的
+    意义）；删除/重置忙碌中的那条仍被拒。
+    """
+
+    def __init__(self, cfg: AgentConfig, store: SessionStore | None = None,
+                 config_store: ConfigStore | None = None):
+        self._all: list[AgentSession] = []
+        primary = AgentSession(cfg, store=store, config_store=config_store)
+        # 共享可变状态：user_cfg 是同一 dict 对象，任何实例改配置全体可见
+        self._shared = {"user_cfg": primary.user_cfg}
+        self._store = primary.store
+        self._config_store = primary.config_store
+        self._cfg = cfg
+        self._cur = primary
+        self._all.append(primary)
+        primary.on_turn_end = self._on_turn_end
+
+    # ---- 代理：一切未显式定义的都落到当前会话 ----
+
+    def __getattr__(self, name: str):
+        cur = self.__dict__.get("_cur")
+        if cur is None:
+            raise AttributeError(name)
+        return getattr(cur, name)
+
+    # ---- 实例管理 ----
+
+    def _spawn(self, load_sid: str = "") -> AgentSession:
+        """造一条并行会话：load_sid 非空则加载该历史，否则全新对话。"""
+        inst = AgentSession(self._cfg, store=self._store,
+                            config_store=self._config_store,
+                            shared=self._shared, load_sid=load_sid)
+        self._all.append(inst)
+        inst.on_turn_end = self._on_turn_end
+        return inst
+
+    def _by_sid(self, sid: str) -> AgentSession | None:
+        """按 sid 找实例（实例的 sid 在首次 run 时才定，所以动态查列表）。"""
+        if not sid:
+            return None
+        if sid == self._cur.sid:
+            return self._cur
+        return next((i for i in self._all if i.sid == sid), None)
+
+    def _on_turn_end(self, inst: AgentSession) -> None:
+        """回合结束：跑完的不是用户正看着的那条 → 打「已完成待查看」标记。"""
+        if inst is not self._cur:
+            inst.attention = True
+
+    # ---- 视图切换与列表（并行核心语义） ----
+
+    def open_session(self, sid: str) -> dict:
+        """切换视图：忙碌也放行（后台继续跑）。目标在生成中时前端走 /api/live 接管。"""
+        inst = self._by_sid(str(sid or ""))
+        if inst is None:
+            return {"error": "对话不存在或已被删除", "code": 404}
+        self._cur = inst
+        inst.attention = False           # 用户已经看过，通知清掉
+        r = inst.current()
+        r["busy"] = inst._busy()
+        return r
+
+    def new_session(self, save: bool = True) -> dict:
+        """开新对话：当前在跑也放行（它转后台）；当前是空壳则直接复用。"""
+        cur = self._cur
+        if save and not cur._busy() and cur._is_empty():
+            return cur.new_session(save)
+        inst = self._spawn("")
+        self._cur = inst
+        return inst.current()
+
+    def delete_session(self, sid: str) -> dict:
+        sid = str(sid or "")
+        target = self._by_sid(sid)
+        if target is not None and target is not self._cur and target._busy():
+            return {"error": "该对话正在生成，先停止再删除", "code": 409}
+        if target is None or target is self._cur:
+            # 删的是当前（或未实例化的旧会话）→ 原实例语义（含忙碌 409）
+            return self._cur.delete_session(sid)
+        ok = self._store.delete(sid)
+        self._all = [i for i in self._all if i is not target]
+        return {"ok": ok, "sessions": self._store.list(),
+                "current": self._cur.current()}
+
+    def statuses(self) -> dict:
+        """会话列表的运行态：{sid: {busy, attention}}。通知徽标的数据源。"""
+        out = {m["id"]: {"busy": False, "attention": False}
+               for m in self._store.list()}
+        for inst in self._all:
+            if inst.sid:
+                out[inst.sid] = {"busy": inst._busy(),
+                                 "attention": inst.attention}
+        if self._cur.sid:
+            out[self._cur.sid] = {"busy": self._cur._busy(),
+                                  "attention": self._cur.attention}
+        return out

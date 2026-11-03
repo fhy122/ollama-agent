@@ -1163,7 +1163,11 @@ details.think .body { font-family: inherit; font-size: 13px; }
 .todo-list li.todo-active .todo-icon { color: var(--accent, #4a9eff); }
 
 /* ---- 输入队列（生成中排队）---- */
-#queue-dock { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+#queue-dock {
+  display: flex; flex-direction: column; gap: 6px;
+  max-width: var(--col-w); margin: 0 auto 8px;   /* 与 composer 对齐：同宽、居中 */
+  position: relative;
+}
 .queue-item {
   display: flex; align-items: center; gap: 10px;
   background: var(--tool-bg, #f6f7f9); border: 1px solid var(--tool-border, #e3e5e8);
@@ -1181,3 +1185,9 @@ details.think .body { font-family: inherit; font-size: 13px; }
 }
 .q-btn:hover { background: rgba(0,0,0,.07); color: var(--fg, #1c1e21); }
 .q-btn.q-del:hover { color: #d64545; }
+
+/* ---- 并行会话通知徽标（列表：● 生成中 / ✦ 后台完成待查看）---- */
+.ss-badge { margin-right: 6px; font-size: 11px; }
+.ss-run { color: var(--accent, #4a9eff); animation: ss-pulse 1.2s ease-in-out infinite; }
+.ss-done { color: #2fa25c; }
+@keyframes ss-pulse { 50% { opacity: .35; } }
