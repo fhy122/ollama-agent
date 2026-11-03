@@ -21,6 +21,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 TMP = tempfile.mkdtemp(prefix="oa-sessions-test-")
 os.environ["OLLAMA_AGENT_SESSIONS"] = TMP
@@ -29,6 +31,16 @@ from agent.config import AgentConfig  # noqa: E402
 import webui.session as WS  # noqa: E402
 from webui.store import MAX_TURNS, SessionStore, make_title  # noqa: E402
 from webui.stream import StreamEmitter  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _restore_run_turn():
+    """本文件直接对 WS.run_turn 赋值打桩；不管测试成败都必须还原，
+    否则按字母序排在后面的文件（test_steer/test_webui…）会拿到替身——
+    而把本文件排在别的文件前面跑时，污染的就是别人（实测坑过 test_parallel）。"""
+    saved = WS.run_turn
+    yield
+    WS.run_turn = saved
 
 
 def _emitter():
