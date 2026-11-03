@@ -152,7 +152,8 @@ class _StubClient:
         self.result = result
         self.calls = 0
 
-    def chat(self, history, tools=None, on_text=None, on_think=None, cancel=None):
+    def chat(self, history, tools=None, on_text=None, on_think=None, cancel=None,
+             on_wait=None, think_hidden=True):
         self.calls += 1
         if on_text and self.result.get("content"):
             on_text(self.result["content"])
@@ -172,7 +173,7 @@ class _Emitter:
     def tool_call(self, name, args): self.events.append(("tool_call", name))
     def tool_result(self, name, text, dt, images=None): self.events.append(("tool_result", name))
     def confirm(self, cid, q): return True
-    def stats(self, st): self.events.append(("stats", st))
+    def stats(self, st, step=0): self.events.append(("stats", st))
     def notice(self, t): self.events.append(("notice", t))
 
 

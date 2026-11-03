@@ -36,7 +36,8 @@ class FakeClient:
         self.cancel_after = cancel_after
         self.seg_calls = 0
 
-    def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None):
+    def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None,
+             on_wait=None, think_hidden=True):
         prompt = messages[-1]["content"]
         self.prompts.append(prompt)
         if "关注点" in prompt and "3-6 行" in prompt:
@@ -352,7 +353,8 @@ def test_note_growth() -> None:
                         return line.split("：", 1)[-1]
                 return ""
 
-            def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None):
+            def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None,
+                     on_wait=None, think_hidden=True):
                 prompt = messages[-1]["content"]
                 self.prompts.append(prompt)
                 q = self._q(prompt)

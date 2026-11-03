@@ -117,7 +117,7 @@ agent-from-scratch/
 | [02](02-streaming-and-think.md) | 让文字流出来 | NDJSON 逐行解析、think 三态、错误重试 |
 | [03](03-tool-protocol.md) | 工具是给模型看的 API | JSON Schema + 注册表 + 自动发现 |
 | [04](04-agent-loop.md) | 主循环：`run_turn` | 消息配对、多步执行、三种打断 |
-| [05](05-emitter.md) | 把输出抽象掉 | 8 个方法，换来两个前端 |
+| [05](05-emitter.md) | 把输出抽象掉 | 8 个方法（+可选 `thinking` 心跳），换来两个前端 |
 | [06](06-cli.md) | 命令行成品 | REPL、斜杠命令、`@` 引用、确认闸 |
 | [07](07-webui.md) | 浏览器第二前端 | 手写 HTTP + NDJSON + 确认反向链路 |
 | [08](08-capabilities.md) | 能力层 | Office 读写、图片、技能、加工具的套路 |

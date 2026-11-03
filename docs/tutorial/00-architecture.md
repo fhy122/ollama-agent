@@ -75,7 +75,7 @@ agent 需要记的东西：对话历史、配置、工作空间路径、确认�
 | 回调函数 `on_event(type, data)` | 一个 dict 传天下，前端得 `if type ==` 几十次，加事件无感知 |
 | **emitter 对象，每个事件一个方法** ✅ | 要实现的接口有 8 个，但 IDE 能补全、少一个方法立刻报错 |
 
-**拍板**：`ConsoleEmitter` / `StreamEmitter` 两个实现，主循环只认接口（第 5 章）。加一个 GUI 前端 = 实现 8 个方法，**不改主循环一行**。
+**拍板**：`ConsoleEmitter` / `StreamEmitter` 两个实现，主循环只认接口（第 5 章）。加一个 GUI 前端 = 实现 8 个方法（外加可选的 `confirm` / `thinking`），**不改主循环一行**。
 
 ---
 

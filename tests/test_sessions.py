@@ -41,9 +41,13 @@ def _fake_run_turn(client, cfg, ctx, history, text, images, emitter=None, cancel
     emitter.step(1)
     emitter.text("你说的是：")
     emitter.text(text[:20])
+    # 心跳：每秒一次的那种。必须只转发给前端、不进 _events，否则一次长工具
+    # 调用就能往历史里灌几百条「已等 N 秒」，回放时把有用内容全冲掉。
+    emitter.thinking(3.0, 0)
+    emitter.thinking(4.0, 1200)
     emitter.tool_call("read_file", {"path": "a.txt"})
     emitter.tool_result("read_file", "文件内容", 0.42)
-    emitter.stats({"prompt_eval_count": 12, "eval_count": 7, "total_duration": 1.5e9})
+    emitter.stats({"prompt_eval_count": 12, "eval_count": 7, "total_duration": 1.5e9}, step=1)
     history.append({"role": "user", "content": text})
     history.append({"role": "assistant", "content": "你说的是：" + text[:20]})
     return "你说的是：" + text[:20]
@@ -117,6 +121,7 @@ def test_session_record_and_resume():
                           "files": ["a.txt"], "imgs": 0}
     evs = [e["type"] for e in s.turns[1]["events"]]
     assert evs == ["step", "text", "tool_call", "tool_result", "stats"], evs
+    assert "thinking" not in evs, "心跳不能进历史事件（回放会刷屏）"
     assert "confir" not in "".join(evs)
     assert s.title.startswith("读一下"), s.title
 

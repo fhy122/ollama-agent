@@ -684,6 +684,28 @@ function newAssistantTurn() {
         this.currentThink = null;
       }
     },
+    // 模型正在生成、但流上一个字都还没来时的进度条（长工具参数生成阶段）。
+    // 必须能就地更新而不是每 100ms 新加一行，否则 200 秒的工具调用会堆出几百个元素。
+    updateWaiting(elapsed, chars) {
+      if (!this._waitEl || !this._waitEl.isConnected) {
+        const d = document.createElement("div");
+        d.className = "gen-wait";
+        d.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>' +
+          '<span class="txt"></span>';
+        this._waitEl = d;
+      }
+      this._waitEl.querySelector(".txt").textContent =
+        `正在生成（已等 ${elapsed.toFixed(0)}s` +
+        (chars ? `，已生成 ${chars} 字符` : "") + "）";
+      this.root.appendChild(this._waitEl);      // 永远贴在最后，跟随新内容下移
+      scrollBottom();
+    },
+    clearWaiting() {
+      if (this._waitEl) {
+        this._waitEl.remove();
+        this._waitEl = null;
+      }
+    },
     addStep(n) {
       if (n > 1) {
         const d = document.createElement("div");
@@ -736,6 +758,7 @@ function newAssistantTurn() {
       scrollBottom();
     },
     finalize() {
+      this.clearWaiting();
       if (this.currentText) {
         this.currentText.classList.remove("streaming-cursor");
         this.currentText.innerHTML = renderMarkdown(this.currentText.dataset.raw || "");
@@ -858,9 +881,15 @@ async function sendMessage() {
 
 // 统一的流事件处理：实时接收与历史回放共用同一套渲染
 function applyEvent(turn, ev) {
+  // 除了心跳本身，任何真实事件都说明「生成阶段的等待」结束了，先收掉进度条，
+  // 否则它会一直挂在回合末尾，看起来像还在等。
+  if (ev.type !== "thinking" && turn.clearWaiting) turn.clearWaiting();
   switch (ev.type) {
     case "step":
       turn.addStep(ev.n);
+      break;
+    case "thinking":
+      turn.updateWaiting(ev.elapsed || 0, ev.chars || 0);
       break;
     case "think": {
       const el = turn.ensureThink();
@@ -888,7 +917,10 @@ function applyEvent(turn, ev) {
       if (ev.gen_tokens != null) {
         const m = document.createElement("div");
         m.className = "meta";
-        m.textContent = `prompt ${ev.prompt_tokens ?? "?"} · 生成 ${ev.gen_tokens} tokens` +
+        // 多步回合里每一步都各报一次：不标「第几步」的话，界面上会出现好几个
+        // 长得一样的 token 行，谁也认不出哪个是生成 9000 字符工具参数那一步。
+        const tag = ev.step ? `第 ${ev.step} 步 · ` : "";
+        m.textContent = tag + `prompt ${ev.prompt_tokens ?? "?"} · 生成 ${ev.gen_tokens} tokens` +
           (ev.duration ? ` · ${ev.duration}s` : "");
         turn.root.appendChild(m);
       }

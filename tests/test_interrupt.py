@@ -86,7 +86,8 @@ def main() -> None:
     import agent.loop as loop_mod
 
     class FakeToolClient:
-        def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None):
+        def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None,
+                 on_wait=None, think_hidden=True):
             return {"thinking": "", "content": "我要写文件",
                     "tool_calls": [{"function": {"name": "write_file",
                                                  "arguments": {"path": "a.txt"}}}],

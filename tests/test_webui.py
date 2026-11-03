@@ -266,7 +266,7 @@ def main():
         class FakeStreamCancel:
             """模拟：流式输出到一半收到 /api/stop。"""
             def chat(self, messages, tools=None, on_text=None,
-                     on_think=None, cancel=None):
+                     on_think=None, cancel=None, on_wait=None, think_hidden=True):
                 if on_text:
                     on_text("先说一半")
                 cancel.set()   # ← 中途打断
@@ -289,7 +289,7 @@ def main():
         # 工具执行前被打断：tool_calls 补占位结果，历史保持合法
         class FakeToolCancel:
             def chat(self, messages, tools=None, on_text=None,
-                     on_think=None, cancel=None):
+                     on_think=None, cancel=None, on_wait=None, think_hidden=True):
                 cancel.set()   # ← 模型刚说完要调工具，用户此时打断
                 return {"thinking": "", "content": "我要读文件",
                         "tool_calls": [{"function": {"name": "read_file",

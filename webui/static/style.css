@@ -455,6 +455,33 @@ button:focus-visible, .icon-btn:focus-visible, .ws-item:focus-visible, .ol-item:
 
 .meta { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
 
+/* 生成中的等待提示：长工具参数（几千字符）生成期间流上一个字节都没有，
+   没有这一行用户会以为程序卡死。用柔和底色，别抢正文注意力。 */
+.gen-wait {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-top: 8px; padding: 5px 11px;
+  font-size: 12px; color: var(--text-2);
+  background: var(--accent-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+}
+.gen-wait .dots { display: inline-flex; gap: 3px; }
+.gen-wait .dots i {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); opacity: .35;
+  animation: waitpulse 1.2s ease-in-out infinite;
+}
+.gen-wait .dots i:nth-child(2) { animation-delay: .2s; }
+.gen-wait .dots i:nth-child(3) { animation-delay: .4s; }
+@keyframes waitpulse {
+  0%, 100% { opacity: .25; transform: scale(.85); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+/* 减弱动效偏好：别让呼吸点成为闪烁刺激源 */
+@media (prefers-reduced-motion: reduce) {
+  .gen-wait .dots i { animation: none; opacity: .8; }
+}
+
 /* ============ Markdown ============ */
 .bubble p { margin: 0 0 10px; }
 .bubble p:last-child { margin-bottom: 0; }

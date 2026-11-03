@@ -168,7 +168,7 @@ ollama-agent/
 |---|---|---|---|---|
 | `agent/cli.py` | 611 | `build_parser`、`main`、`resolve_at_refs`、`find_context_files`、`do_paste`、`do_skill` | 参数→`AgentConfig`；REPL 主循环；斜杠命令分发；`@` 引用解析；面板与热键接线 | 两个入口文件 |
 | `agent/palette.py` | 445 | `trigger_token`、`PaletteState`、`read_line`、`_read_line_raw`、`_redraw`、`_enable_vt` | 敲 `/` 或 `@` 后弹出候选；↑↓/Enter/Esc；按显示宽度截断重绘 | cli（`--no-palette` 关闭） |
-| `agent/events.py` | 54 | `ConsoleEmitter`（8 个方法） | `run_turn` 的所有输出都走这里 | loop 默认 emitter |
+| `agent/events.py` | 76 | `ConsoleEmitter`（8 个核心方法 + 可选 `thinking`） | `run_turn` 的所有输出都走这里 | loop 默认 emitter |
 | `agent/console.py` | 29 | `setup_stdio`、`color` | UTF-8 + 行缓冲；ANSI 包装 | cli、client、events、palette |
 
 **IO 与系统底层**
@@ -313,7 +313,11 @@ WebUI 侧相对 CLI 只多两件事：`AgentSession` 用锁把回合串行化；
 回合内循环（`for step in range(1, max_steps+1)`）：
 
 1. `emitter.step(n)`
-2. `client.chat(...)` 流式收：`on_think` → `emitter.think`，`on_text` → `emitter.text`；返回 `{thinking, content, tool_calls, stats, cancelled}`
+2. `client.chat(...)` 流式收：`on_think` → `emitter.think`，`on_text` → `emitter.text`，
+   `on_wait` → `emitter.thinking`（可选，长工具参数生成期间的每秒心跳）；
+   返回 `{thinking, content, tool_calls, stats, cancelled, error}`
+2.5 `emitter.stats(st, step=n)` —— **每步各报一次**（只报一次的话，生成 9000 字符
+   工具参数那一步的耗时会从界面上消失）
 3. 无 `tool_calls` → 记 `final_text`，break
 4. 有 → 先 append assistant（带 `tool_calls`），再逐个 `tools.dispatch(name, args, ctx)`
 5. 每个结果包成 `{"role":"tool", "content":..., "tool_name":...}` append 回去
@@ -386,7 +390,7 @@ WebUI 侧相对 CLI 只多两件事：`AgentSession` 用锁把回合串行化；
 | 想做的事 | 改哪里 | 注意 |
 |---|---|---|
 | **加工具** | 新建 `tools/your_tool.py`，`@tool(...)` | 参数 schema 里每个参数都要有 `description`（小模型靠它选工具）；危险操作加 `confirm=True`；路径一律 `ctx.resolve()` |
-| **加前端** | 实现与 `ConsoleEmitter` 同名的方法（step/text/think/newline/tool_call/tool_result/stats/notice，可选 confirm） | 已有 GUI 想法时，`run_turn(emitter=你的)` 即可 |
+| **加前端** | 实现与 `ConsoleEmitter` 同名的方法（step/text/think/newline/tool_call/tool_result/stats/notice，可选 confirm 和 thinking） | 已有 GUI 想法时，`run_turn(emitter=你的)` 即可；`stats` 要接受 `step` 参数，否则长工具调用的耗时又会消失 |
 | **加技能** | `{workspace}/.workbuddy/skills/<name>/SKILL.md`、`~/.workbuddy/skills/`，或仓库内置 `skills/<name>/SKILL.md` | frontmatter 的 `name/description` 进索引常驻，正文由 `skill` 工具按需加载；三个目录同名时**先者胜**（工作空间 > 用户 > 仓库内置），内置技能因此可被用户覆盖 |
 | **换模型 / 调 ctx / 改 think** | `AgentConfig` + `client` 对应字段 | 两边必须同步：`cli.py` 的 `/model` `/ctx` `/think` 与 `session.update_config()` 都在双写 |
 | **加 WebUI 接口** | `webui/server.py` 的 `do_GET/do_POST` 路由分支 | 纯标准库手写路由，没有框架；静态资源在 `webui/static/` |
@@ -427,7 +431,7 @@ WebUI 侧相对 CLI 只多两件事：`AgentSession` 用锁把回合串行化；
 内核:  run_turn(loop.py) ← client.chat(client.py) ← /api/chat ; dispatch(registry.py) → tools/*
 提示:  SYSTEM_PROMPT(config.py) + 工作空间 + skill_index(skill.py)
 历史:  [{system}, {user,images?}, {assistant,tool_calls?}, {tool,tool_name,images?}...]
-输出:  emitter: ConsoleEmitter(CLI) / StreamEmitter(NDJSON) —— 加前端只实现这 8 个方法(+confirm)
+输出:  emitter: ConsoleEmitter(CLI) / StreamEmitter(NDJSON) —— 加前端只实现这 8 个方法(+confirm/thinking)
 安全:  confirm=True 工具 → ctx.ask → CLI input / WebUI ConfirmGate(300s 超时=拒绝)
 路径:  ctx.resolve(): 相对 → workspace；绝对/~ → 原样
 测试:  python tests/test_tools.py 等，脚本式，看 PASS/SKIP

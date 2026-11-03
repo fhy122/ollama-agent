@@ -95,17 +95,22 @@ class StreamEmitter:
     def confirm(self, cid, question):
         self._send({"type": "confirm", "id": cid, "question": question})
 
-    def stats(self, st):
+    def stats(self, st, step=0):
         if not st:
             return
-        self._send({"type": "stats",
+        self._send({"type": "stats", "step": step,
                     "prompt_tokens": st.get("prompt_eval_count"),
                     "gen_tokens": st.get("eval_count"),
                     "duration": round((st.get("total_duration") or 0) / 1e9, 2)})
 
     def notice(self, text):
         self._send({"type": "notice", "text": text})
+
+    def thinking(self, elapsed, chars=0):
+        self._send({"type": "thinking", "elapsed": round(elapsed, 1), "chars": chars})
 ```
+
+**`thinking` 是这里唯一"每秒一次"的事件**，所以 `_send` 必须加锁：心跳跑在看门狗线程上，正文跑在读流线程上，两个线程同时往同一个 `wfile` 写会把 NDJSON 拼成半行 JSON，前端整批解析失败。
 
 **`_send` 里的三个异常类型缺一不可**：`BrokenPipeError`（写完才失败）、`ConnectionResetError`（对端 RST）、`OSError`（Windows 上关页有时抛这个）。少接一个，用户关标签页就会在服务端控制台看到红色堆栈。
 

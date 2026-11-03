@@ -36,6 +36,25 @@ def _expert_available() -> bool:
     return tools.get("web_chat") is not None
 
 
+def _stats_with_step(emitter):
+    """返回一个可以安全调用的 stats(st, step=...) 函数。
+
+    stats 的 step 参数是后加的。教程/用户自建的前端可能还是 stats(st) 的老签名，
+    直接传 step 会 TypeError —— 而这种错误发生在**回合中间**，用户看到的是「回答
+    跑到一半炸了」，比少标一个步号严重得多。所以这里先看签名，不支持就退化成
+    不带 step 调用。
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(emitter.stats).parameters
+    except (TypeError, ValueError):
+        return lambda st, step=0: emitter.stats(st)
+    if "step" in params:
+        return lambda st, step=0: emitter.stats(st, step=step)
+    return lambda st, step=0: emitter.stats(st)
+
+
 def expert_requested(user_text: str) -> bool:
     """用户是否点名要用外脑（"不要用外脑"这类否定说法不算）。"""
     if not user_text or _EXPERT_DENY.search(user_text):
@@ -160,6 +179,8 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
     if emitter is None:
         emitter = ConsoleEmitter(cfg)
 
+    _stats = _stats_with_step(emitter)      # 兼容老签名的 stats(st)
+
     # 需要自己发子请求的工具（read_long_doc 逐段精读）从 ctx 拿运行时依赖。
     # 在这里统一注入，而不是各前端各写一遍：多一处遗漏就是一处「工具静默失效」。
     ctx.cfg = cfg
@@ -204,8 +225,19 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                 on_text=emitter.text,
                 on_think=emitter.think,
                 cancel=cancel,
+                on_wait=getattr(emitter, "thinking", None),
+                # 前端不显示思考内容时，think 块对用户等于不存在，不能算「有进展」，
+                # 否则心跳会被这些看不见的块一路抑制掉。
+                think_hidden=getattr(emitter, "think_hidden", True),
             )
             emitter.newline()
+
+            # 每一步单独报一次耗时。以前只在回合末尾发一次，用的是**最后一次**
+            # resp 的 stats —— 于是「生成 9000 字符工具参数花了两百秒」那一步
+            # 的耗时在界面上完全不存在，用户只看到最后一步的小数字，永远对不上。
+            st = resp.get("stats") or {}
+            if st:
+                _stats(st, step=step)
 
             content = resp["content"]
             tool_calls = resp["tool_calls"]
@@ -286,5 +318,6 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
         emitter.notice("[⏹ 已打断本轮回答]")
         return resp.get("content") or ""
 
-    emitter.stats(resp.get("stats") or {})
+    # 这里不再补报统计：每一轮 chat 之后都已经按步发过了（见上面循环里的
+    # emitter.stats(_stats, step=step)）。留着这里只会把最后一步的耗时打印两遍。
     return final_text

@@ -17,11 +17,15 @@ from __future__ import annotations
 import http.client
 import json
 import socket
+import threading as _threading
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from agent.console import color
+
+# 心跳间隔（秒）。要足够小才显得「活着」，又不能太密把流刷爆。
+_WAIT_TICK_SEC = 1.0
 
 
 def error_text(body: str) -> str:
@@ -61,6 +65,10 @@ class StreamParser:
         {"type": "tool",  "index": 0, "name": ..., "args": ...}
         {"type": "done",  "stats": {...}}
         {"type": "error", "text": ...}
+
+    这里**故意没有**「工具参数已经吐了多少」这种增量事件：Ollama 把 tool_calls
+    攒成整块才下发，实测 95 秒只来 2 个数据块，解析器根本没有东西可报。
+    进度心跳由 chat() 的看门狗线程另算（见 ChatClient.chat 的 on_wait）。
 
     finished 标记「后端明确说过本轮结束了」，用来区分正常收尾和断流。
     """
@@ -256,12 +264,32 @@ class ChatClient:
     # ---------- 对话 ----------
 
     def chat(self, messages: list, tools: list | None = None,
-             on_text=None, on_think=None, cancel=None) -> dict:
+             on_text=None, on_think=None, cancel=None,
+             on_wait=None, think_hidden: bool = True) -> dict:
         """发起一轮对话 → {"thinking","content","tool_calls","stats","cancelled","error"}
 
         cancel: 可选 threading.Event；置位后中断流式读取并关闭连接，
         返回已生成的部分内容（cancelled=True）。后端感知到客户端断开
         会自动终止服务端生成。
+
+        on_wait: 可选回调 on_wait(elapsed_seconds, chars)。
+        **这是唯一能让用户看见「模型正在生成工具参数」的通道。**
+        实测依据（qwen3.5:9b，写 40 行 CSV 的 write_file 参数）：
+            发送请求 → ……128.6 秒…… → 响应头才到达 → 立刻就是整块 tool_calls
+        也就是说 Ollama 在工具参数整块生成完之前，**连 HTTP 响应头都不发**，
+        getresponse() 一直阻塞。参数生成的那一百多秒里连接上零字节推送，
+        靠流本身完全无法感知进度。
+        所以心跳线程在读流之前就得起来（见下面 _watchdog 的说明），
+        由它按秒回调，用来渲染「正在生成参数 N 字符」。
+        回调里绝不能再发请求或碰连接。
+
+        think_hidden: 思考内容对用户是否不可见（show_think=off，或前端不渲染）。
+        **这决定心跳该不该在「模型还在思考」时也继续报。**
+        实测到的坑：think 一直被藏着的时候，模型其实在持续吐 think 块，
+        如果把这些不可见的块也算作「有进展」，心跳就会被无限抑制 ——
+        实测日志里就是这个样子：3 秒后报了一次，然后 **155 秒一声不响**，
+        接着直接跳「已等 159 秒」。用户看到的就是这三分钟里画面全静止。
+        所以只有**用户看得见**的内容（正文、工具参数）才算进展。
 
         error: 流中途断开的原因（读超时 / 连接被重置 / 数据不完整 / 没收到 done 帧）。
         非空表示这轮回答是半截的：调用方必须保留 content、把 tool_calls 当废数据丢掉，
@@ -272,15 +300,63 @@ class ChatClient:
         messages = list(messages)
         self._abort_requested = False
         t_start = _time.time()
+
+        # ---- 心跳线程必须在**发请求之前**就起来 ----
+        # 实测（qwen3.5:9b，写 40 行 CSV 的 write_file 参数）：
+        #     [ 128.6s] ★ 响应头到达（getresponse 返回）
+        #     [ 128.6s] 第1块 长度=901
+        # 也就是说 Ollama 在工具参数整块生成完之前**连 HTTP 响应头都不发**，
+        # getresponse() 一直阻塞 128 秒。心跳放在它后面启动 = 最需要反馈的那段
+        # 时间恰恰没有心跳，等于白做。所以线程必须提到 _post_stream 之前。
+        last_activity = [_time.time()]
+        wait_stop = _threading.Event()
+        waiter = None
+        progress = [0]        # 已「看见」的字符数（正文 + 思考 + 工具参数）
+
+        def _watchdog() -> None:
+            while not wait_stop.wait(_WAIT_TICK_SEC):
+                if not on_wait:
+                    continue
+                idle = _time.time() - last_activity[0]
+                if idle < _WAIT_TICK_SEC:
+                    continue
+                try:
+                    on_wait(_time.time() - t_start, progress[0])
+                except Exception:
+                    pass      # 前端回调出错绝不能影响读流
+
+        if on_wait:
+            waiter = _threading.Thread(target=_watchdog, daemon=True)
+            waiter.start()
+
+        def _mark() -> None:
+            last_activity[0] = _time.time()
+
         try:
-            resp = self._post_stream(messages, tools)
-        except Exception:
-            self._drop_conn()
-            if self._abort_requested:
-                # 还没拿到响应就被打断：按 cancelled 收尾，别报成连接错误
-                return {"thinking": "", "content": "", "tool_calls": [],
-                        "stats": {}, "cancelled": True, "error": None}
-            raise
+            try:
+                resp = self._post_stream(messages, tools)
+            except Exception:
+                self._drop_conn()
+                if self._abort_requested:
+                    # 还没拿到响应就被打断：按 cancelled 收尾，别报成连接错误
+                    return {"thinking": "", "content": "", "tool_calls": [],
+                            "stats": {}, "cancelled": True, "error": None}
+                raise
+            return self._read_stream(resp, on_text=on_text, on_think=on_think,
+                                     cancel=cancel, t_start=t_start,
+                                     progress=progress, mark=_mark,
+                                     think_hidden=think_hidden)
+        finally:
+            # 无论正常结束还是异常退出都要停心跳：漏停会让它一直往已收尾的
+            # 界面刷「仍在生成」，比不显示更糟
+            wait_stop.set()
+            if waiter is not None:
+                waiter.join(timeout=2.0)
+
+    def _read_stream(self, resp, on_text, on_think, cancel, t_start, progress,
+                     mark, think_hidden: bool = True) -> dict:
+        """读完一条流，组装成 chat() 的返回结构（拆出来只为让心跳覆盖请求阶段）。"""
+        import time as _time
 
         thinking_parts: list[str] = []
         content_parts: list[str] = []
@@ -297,10 +373,16 @@ class ChatClient:
                 kind = ev.get("type")
                 if kind == "think":
                     thinking_parts.append(ev["text"])
+                    progress[0] += len(ev["text"])
                     if on_think:
                         on_think(ev["text"])
+                    # 藏在后台的思考不算「用户看见的进展」：算进去的话心跳会被
+                    # 一路抑制，实测出现过 155 秒一声不响（见 chat 的 docstring）。
+                    if not think_hidden:
+                        mark()
                 elif kind == "text":
                     content_parts.append(ev["text"])
+                    progress[0] += len(ev["text"])
                     if on_text:
                         on_text(ev["text"])
                 elif kind == "tool":
@@ -315,6 +397,7 @@ class ChatClient:
                         merged.update(args)
                     elif isinstance(args, str) and args.strip():
                         merged["_raw"] = merged.get("_raw", "") + args
+                        progress[0] += len(args)
                 elif kind == "done":
                     done_seen = True
                     stats = ev.get("stats") or stats
@@ -327,6 +410,10 @@ class ChatClient:
                     cancelled = True
                     break
                 _absorb(parser.feed(raw))
+                # 有**用户看得见**的内容才算进展。think 块在 _absorb 里单独处理：
+                # 它被藏着的时候不能重置静默计时，否则心跳永远等不到机会。
+                if content_parts or tool_calls or (thinking_parts and not think_hidden):
+                    mark()
                 if done_seen or stream_error:
                     break
             else:

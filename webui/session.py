@@ -59,11 +59,17 @@ class RecordingEmitter:
 
     text / think 是逐 token 推的，连续同类事件合并成一条，否则一次回答能塞几千个事件。
     confirm 不记录：确认请求是瞬时的，回放出来只会变成一串永远没人应答的弹窗。
+    thinking 不记录：那是每秒一次的心跳，一次长工具调用就能灌进几百条，
+    回放对话时整屏刷「已等 N 秒」，只会把有用内容冲掉。
     """
 
     def __init__(self, inner, events: list[dict]):
         self._inner = inner
         self._events = events
+
+    @property
+    def think_hidden(self) -> bool:
+        return bool(getattr(self._inner, "think_hidden", False))
 
     def _push(self, obj: dict) -> None:
         ev = self._events
@@ -100,13 +106,24 @@ class RecordingEmitter:
     def confirm(self, cid: str, question: str) -> None:
         self._inner.confirm(cid, question)
 
-    def stats(self, st: dict) -> None:
+    def stats(self, st: dict, step: int = 0) -> None:
         if st:
-            self._push({"type": "stats",
+            self._push({"type": "stats", "step": step,
                         "prompt_tokens": st.get("prompt_eval_count"),
                         "gen_tokens": st.get("eval_count"),
                         "duration": round((st.get("total_duration") or 0) / 1e9, 2)})
-        self._inner.stats(st)
+        self._inner.stats(st, step)
+
+    def thinking(self, elapsed: float, chars: int = 0) -> None:
+        """生成参数期间的心跳：**只转发、不记录**。
+
+        这个回调是每秒一次的，录进 _events 的话，一次 200 秒的工具调用会往历史里
+        灌 200 条无用事件，回放对话时整屏都在刷「已等 N 秒」。回放只需要结果，
+        不需要当时的等待过程。
+        """
+        inner = getattr(self._inner, "thinking", None)
+        if inner:
+            inner(elapsed, chars)
 
     def notice(self, text: str) -> None:
         self._push({"type": "notice", "text": text})

@@ -7,12 +7,14 @@
   {"type":"tool_call","name":"read_file","args":{...}}
   {"type":"tool_result","name":"read_file","text":"...","dt":1.2,"images":[...]?}
   {"type":"confirm","id":"c1","question":"write_file({\"path\":...})"}
-  {"type":"stats","prompt_tokens":..,"gen_tokens":..,"duration":..}
+  {"type":"stats","prompt_tokens":..,"gen_tokens":..,"duration":..,"step":1}
+  {"type":"thinking","elapsed":12.0,"chars":0}
   {"type":"notice","text":"..."}
 """
 from __future__ import annotations
 
 import json
+import threading
 
 
 class StreamEmitter:
@@ -25,11 +27,16 @@ class StreamEmitter:
         self.wfile = wfile
         self._on_disconnect = on_disconnect
         self._disconnected = False
+        # thinking 心跳由独立看门狗线程发，正文由读流线程发 —— 两个线程同时往
+        # 同一个 wfile 写会互相插字（NDJSON 拼成半行 JSON，前端整批解析失败）。
+        self._lock = threading.Lock()
 
     def _send(self, obj: dict) -> None:
+        line = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
         try:
-            self.wfile.write((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
-            self.wfile.flush()
+            with self._lock:
+                self.wfile.write(line)
+                self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             # 浏览器关页/断连：吞掉写错误；通知一次以便打断后端回合
             if not self._disconnected:
@@ -41,6 +48,11 @@ class StreamEmitter:
                         pass
 
     # ---- 事件接口（与 ConsoleEmitter 对齐） ----
+
+    @property
+    def think_hidden(self) -> bool:
+        """网页端会渲染「思考过程」折叠块，思考内容对用户可见，所以算进展。"""
+        return False
 
     def step(self, n: int) -> None:
         self._send({"type": "step", "n": n})
@@ -68,15 +80,25 @@ class StreamEmitter:
         """请求人工确认（工具执行前）。前端弹窗 → POST /api/confirm 应答。"""
         self._send({"type": "confirm", "id": cid, "question": question})
 
-    def stats(self, st: dict) -> None:
+    def stats(self, st: dict, step: int = 0) -> None:
         if not st:
             return
         self._send({
             "type": "stats",
+            "step": step,
             "prompt_tokens": st.get("prompt_eval_count"),
             "gen_tokens": st.get("eval_count"),
             "duration": round((st.get("total_duration") or 0) / 1e9, 2),
         })
+
+    def thinking(self, elapsed: float, chars: int = 0) -> None:
+        """生成参数期间的逐秒心跳（长 tool_call 执行前唯一的可见反馈）。
+
+        实测依据：think=False 时让模型写 3 张表的 SQL，95 秒里上游只来 2 个数据块
+        （1 个整块 TOOL + 1 个 done），参数生成期间流上零字节 —— Ollama 把
+        tool_calls 攒完整才下发。前端无法从流里感知进度，只能由这里主动喂心跳。
+        """
+        self._send({"type": "thinking", "elapsed": round(elapsed, 1), "chars": chars})
 
     def notice(self, text: str) -> None:
         self._send({"type": "notice", "text": text})

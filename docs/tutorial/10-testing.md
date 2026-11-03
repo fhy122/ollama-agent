@@ -38,7 +38,7 @@ def check(cond, msg):           # 断言助手
 | 手段 | 用来测 | 关键代码 |
 |---|---|---|
 | ① 临时工作空间 | 所有文件类工具、路径解析 | `tempfile.mkdtemp()` + `ToolContext(workspace=...)` |
-| ② 记录型 emitter | `run_turn` 的事件序列 | 自己实现 8 个方法，往 list 里 append |
+| ② 记录型 emitter | `run_turn` 的事件序列 | 自己实现 8 个方法（外加可选 `thinking`），往 list 里 append |
 | ③ 桩 client | 多步循环、打断、错误恢复 | 一个类，`chat()` 返回预设脚本 |
 | ④ 替换 `urlopen` | 客户端协议解析、400 重试 | 猴补丁 + 假 `HTTPError` |
 | ⑤ 真 HTTP 打自己的服务 | WebUI 路由、NDJSON | 起 `WebUIApp` 线程，`urllib` 请求 |
@@ -71,7 +71,7 @@ class Rec:
     def newline(self): pass
     def tool_call(self, n, a): self.ev.append(("tool_call", n, a))
     def tool_result(self, n, t, dt, images=None): self.ev.append(("tool_result", n))
-    def stats(self, st): self.ev.append(("stats",))
+    def stats(self, st, step=0): self.ev.append(("stats", step))
     def notice(self, t): self.ev.append(("notice", t))
 ```
 
@@ -96,7 +96,8 @@ class StubClient:
         self.calls = 0
         self.seen_history: list[list] = []
 
-    def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None):
+    def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None,
+             on_wait=None):
         self.seen_history.append([dict(m) for m in messages])
         r = self.script[min(self.calls, len(self.script) - 1)]
         self.calls += 1
@@ -214,7 +215,7 @@ class Rec:
     def newline(self): pass
     def tool_call(self, n, a): self.ev.append(("tool_call", n))
     def tool_result(self, n, t, dt, images=None): self.ev.append(("tool_result", n))
-    def stats(self, st): pass
+    def stats(self, st, step=0): pass
     def notice(self, t): self.ev.append(("notice", t))
 
 
@@ -222,7 +223,8 @@ class StubClient:
     def __init__(self, script):
         self.script, self.calls, self.histories = script, 0, []
 
-    def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None):
+    def chat(self, messages, tools=None, on_text=None, on_think=None, cancel=None,
+             on_wait=None):
         self.histories.append([dict(m) for m in messages])
         r = self.script[min(self.calls, len(self.script) - 1)]
         self.calls += 1
@@ -314,6 +316,8 @@ if __name__ == "__main__":
 |---|---|---|
 | `test_tools.py` | 708 | 主回归：15 个工具全在、路径解析规则、xlsx/docx 生成与解析、参差行报错、图片魔数、`edit_file` 唯一匹配、`clip_text`、`glob_to_regex` |
 | `test_webui.py` | 431 | 静态页 200、`/api/health`、配置读改、上传、`/api/skills`、`/api/files`、NDJSON 每行合法、`StreamEmitter` 8 个方法 |
+| `test_wait_heartbeat.py` | 299 | 长工具参数生成期间的心跳：静默期有回调、返回后必停、字符数递增、回调抛异常不弄坏读流、`run_turn` 每步各报 stats |
+| `test_ui_thinking.py` | 137 | 界面上的等待提示条：出现/就地更新不堆元素/真实事件到就收掉/stats 标「第 N 步」/回合结束清理 |
 | `test_client_errors.py` | 129 | 400 嵌套错误压平、think 字段自动去掉重试、图片无效剥离重试、历史不被改动 |
 | `test_interrupt.py` | 117 | `KeyboardInterrupt` 收尾、孤立 tool_calls 补齐、`cancelled` 路径 |
 | `test_cli_palette_console.py` | 278 | 真控制台下的面板按键序列、`color()`、`setup_stdio` |
