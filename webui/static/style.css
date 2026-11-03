@@ -696,6 +696,26 @@ details.think .body { font-family: inherit; font-size: 13px; }
 .composer-shell, .attach-row, .hints { max-width: var(--col-w); margin: 0 auto; position: relative; }
 .attach-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .attach-row:empty { display: none; }
+/* 从路径添加：一行输入 + 添加/取消，默认藏起（点文件夹按钮展开） */
+.path-attach {
+  display: flex; align-items: center; gap: 6px;
+  max-width: var(--col-w); margin: 0 auto 8px;
+}
+.path-attach.hidden { display: none; }
+.path-attach input {
+  flex: 1; min-width: 0; padding: 7px 10px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--panel); color: var(--text);
+  font: inherit; font-size: 12.5px;
+}
+.path-attach input:focus { outline: none; border-color: var(--accent); }
+.path-attach .path-ok {
+  flex: 0 0 auto; padding: 7px 12px; border: none; border-radius: 10px;
+  background: var(--accent); color: #fff; font: inherit; font-size: 12.5px;
+  cursor: pointer;
+}
+.path-attach .path-ok:hover { background: var(--accent-hover); }
+.path-attach .icon-btn { flex: 0 0 auto; }
 .attach {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 5px 8px 5px 6px;

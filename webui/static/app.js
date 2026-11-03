@@ -1704,6 +1704,43 @@ $("file-input").onchange = async (e) => {
   e.target.value = "";
 };
 
+// 从路径添加本机文件（不复制）：服务和浏览器同一台机器，
+// 拖拽/选文件拿不到真实路径（浏览器安全模型），粘贴路径是唯一免拷贝通道
+function togglePathAttach(show) {
+  const row = $("path-attach");
+  row.classList.toggle("hidden", !show);
+  if (show) {
+    $("path-input").focus();
+    $("path-input").select();
+  }
+}
+
+async function confirmPathAttach() {
+  const raw = $("path-input").value.trim();
+  if (!raw) return;
+  try {
+    const r = await api("/api/attach_path", { path: raw });
+    if (r.error) throw new Error(r.error);
+    addFileAttachment(r.name, r.path);
+    $("path-input").value = "";
+    togglePathAttach(false);
+  } catch (e) {
+    toast(`添加失败: ${e.message}`, true);
+  }
+}
+
+$("btn-path").onclick = () => togglePathAttach($("path-attach").classList.contains("hidden"));
+$("btn-path-cancel").onclick = () => togglePathAttach(false);
+$("btn-path-ok").onclick = confirmPathAttach;
+$("path-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); confirmPathAttach(); }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();          // 只关输入行，别让全局 Esc 顺手关抽屉/弹窗
+    togglePathAttach(false);
+  }
+});
+
 $("btn-settings").onclick = () => {
   $("settings").classList.remove("hidden");
   loadConfig();

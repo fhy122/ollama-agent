@@ -56,6 +56,42 @@ def _json_body(handler: BaseHTTPRequestHandler) -> dict:
         return {}
 
 
+def build_files_hint(files: list[str], workspace: Path) -> str:
+    """附件指引，按「副本 / 原件」分开说话。
+
+    两条来源的文件长得一样（都是路径字符串），但模型该做的事不同：
+      - 拖拽/选文件上传的副本落在工作区 .uploads/ 里，模型得知道去那儿找；
+      - 「从路径添加」的是本机原件（绝对路径），没有副本，直读即可 ——
+        别让模型再 list_dir 去摸一遍（实测它真的会去摸）。
+    相对路径一律视为工作区内（read_file 的 resolve 规则也是这么锚定的）。
+    """
+    inner, outer = [], []
+    for f in files:
+        p = Path(f)
+        if not p.is_absolute():
+            inner.append(f)
+            continue
+        try:
+            inside = p.resolve().is_relative_to(workspace.resolve())
+        except OSError:
+            inside = False
+        (inner if inside else outer).append(f)
+
+    parts = []
+    if inner:
+        # 别叫它「剪贴板文件」：模型会顺着这个词去调 clipboard_image，
+        # 结果把一张截图当成 PDF 读。
+        parts.append("[我附带了这些文件（已上传到工作空间，不是剪贴板截图），"
+                     "短的直接用 read_file 读；很长（几十万字/几百页）的必须用 "
+                     "read_long_doc 分段精读；PDF 抽不出文字再用 load_image 按页渲染]\n"
+                     + "\n".join(f"- {p}" for p in inner))
+    if outer:
+        parts.append("[这些是我本机的文件，给的是绝对路径原件（没有上传副本），"
+                     "用 read_file 直接按这个路径读]\n"
+                     + "\n".join(f"- {p}" for p in outer))
+    return "\n\n".join(parts)
+
+
 def _full_config(app) -> dict:
     """GET / POST 同一份配置快照：带上当前后端能列出的模型和工具清单。
 
@@ -309,6 +345,8 @@ def make_handler(app: "WebUIApp"):
                 self.handle_paste()
             elif path == "/api/upload":
                 self.handle_upload()
+            elif path == "/api/attach_path":
+                self.handle_attach_path()
             else:
                 self.send_json({"error": "not found"}, 404)
 
@@ -390,13 +428,7 @@ def make_handler(app: "WebUIApp"):
 
             send_text = message or "看一下我附带的内容"
             if files:
-                listing = "\n".join(f"- {p}" for p in files)
-                # 别叫它「剪贴板文件」：模型会顺着这个词去调 clipboard_image，
-                # 结果把一张截图当成 PDF 读。明确说是已上传到工作空间的文件。
-                send_text += (f"\n\n[我附带了这些文件（已上传到工作空间，不是剪贴板截图），"
-                              f"短的直接用 read_file 读；很长（几十万字/几百页）的必须用 "
-                              f"read_long_doc 分段精读；PDF 抽不出文字再用 load_image 按页渲染]\n"
-                              f"{listing}")
+                send_text += "\n\n" + build_files_hint(files, app.session.workspace)
             try:
                 final = app.session.run(send_text, images or None, emitter,
                                         files=files, display=message)
@@ -495,6 +527,29 @@ def make_handler(app: "WebUIApp"):
             dest = up_dir / name
             dest.write_bytes(data)
             self.send_json({"path": str(dest)})
+
+        def handle_attach_path(self):
+            """按本机原路径挂附件（不复制）。
+
+            服务和浏览器在同一台机器上（只绑 127.0.0.1），「选文件上传」
+            实际是同机拷贝。这里让用户直接给路径，验证存在后原样返回，
+            模型用 read_file 按绝对路径直读，省掉一份拷贝和 .uploads 堆积。
+            """
+            body = _json_body(self)
+            # 容忍从资源管理器「复制文件地址」带出来的引号
+            raw = str(body.get("path") or "").strip().strip('"').strip("'")
+            p = Path(raw).expanduser()
+            if not raw:
+                self.send_json({"error": "路径为空"}, 400)
+                return
+            if not p.is_absolute():
+                self.send_json({"error": f"要绝对路径（如 D:\\docs\\xx.pptx），收到: {raw}"}, 400)
+                return
+            if not p.is_file():
+                self.send_json({"error": f"文件不存在: {p}"}, 400)
+                return
+            self.send_json({"path": str(p), "name": p.name,
+                            "size": p.stat().st_size})
 
     return Handler
 
