@@ -88,3 +88,19 @@ def test_ollama_client_does_not_speak_openai():
 def test_api_key_only_affects_openai():
     oll = OllamaClient(_cfg(api_key="sk-secret"))
     assert "Authorization" not in oll.headers()
+
+
+def test_headers_carry_global_user_agent():
+    """聊天请求也必须自报 UA，且引用全局定义而不是写死字面量。
+
+    http.client 默认一个 UA 都不发；urllib 会发 Python-urllib/3.x ——
+    这两种在 Cloudflare 眼里都是「非浏览器客户端」，实测被 403（Error 1010）。
+    判据写成「等于 agent.user_agent()」，改版本号时这条测试不该红。
+    """
+    from agent import user_agent
+
+    oll = OllamaClient(_cfg(provider="ollama"))
+    opn = OpenAICompatClient(_cfg(provider="openai", api_key="sk-x"))
+    assert oll.headers()["User-Agent"] == user_agent(), oll.headers()
+    assert opn.headers()["User-Agent"] == user_agent(), opn.headers()
+    assert "Python-urllib" not in opn.headers()["User-Agent"], opn.headers()

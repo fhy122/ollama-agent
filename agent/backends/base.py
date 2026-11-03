@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from agent import user_agent
 from agent.console import color
 
 # 心跳间隔（秒）。要足够小才显得「活着」，又不能太密把流刷爆。
@@ -54,6 +55,13 @@ def error_text(body: str) -> str:
         if isinstance(ie, dict):
             return str(ie.get("message") or ie)[:300]
         return str(ie or inner)[:300]
+    # 站点防护（Cloudflare 等）的 problem+json：
+    # {"type":".../error-1010/","title":"Error 1010: Access denied","detail":"..."}
+    # 没有 error 字段，照原文打印就是一坨 JSON，抠出 title/detail 才看得懂。
+    title, detail = obj.get("title"), obj.get("detail")
+    if title or detail:
+        text = f"{title}：{detail}" if title and detail else str(title or detail)
+        return text[:300]
     return body.strip()[:300]
 
 
@@ -114,7 +122,9 @@ class ChatClient:
         raise NotImplementedError
 
     def headers(self) -> dict:
-        return {"Content-Type": "application/json"}
+        # UA 统一引用全局定义，别在请求里写死：发给中转站的每个请求都得
+        # 自报家门，否则容易被 Cloudflare 之类按客户端特征 403（Error 1010）。
+        return {"Content-Type": "application/json", "User-Agent": user_agent()}
 
     def build_payload(self, messages: list, tools: list | None = None) -> dict:
         raise NotImplementedError

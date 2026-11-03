@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 
+from agent import user_agent
 from agent.backends.base import ChatClient, StreamParser
 from agent.providers import endpoint, to_openai_payload
 from agent.backends.openai_messages import to_openai_messages
@@ -132,7 +133,11 @@ class OpenAICompatClient(ChatClient):
         return OpenAIStreamParser()
 
     def headers(self) -> dict:
-        h = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+        # UA 引用全局定义（agent.user_agent），别写死字面量：
+        # 不带 UA 或带 Python-urllib 会被 Cloudflare 按客户端特征 403（Error 1010）。
+        h = {"Content-Type": "application/json",
+             "Accept": "text/event-stream",
+             "User-Agent": user_agent()}
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
         return h

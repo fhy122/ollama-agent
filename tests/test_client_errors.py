@@ -92,7 +92,15 @@ def test_error_text() -> None:
     assert B.error_text('{"error":"直白消息"}') == "直白消息"
     assert B.error_text('{"error":{"message":"dict 消息"}}') == "dict 消息"
     assert B.error_text("完全不是 JSON") == "完全不是 JSON"
-    print("PASS: _error_text（嵌套 JSON / 字符串 / dict / 非 JSON）")
+    # 站点防护的 problem+json（Cloudflare Error 1010）：没有 error 字段，
+    # 照原文打印就是一坨 JSON，必须抠出 title/detail
+    cf = ('{"type":"https://developers.cloudflare.com/ai-status-codes/'
+          'cloudflare-1xx-errors/error-1010/","title":"Error 1010: Access denied",'
+          '"status":403,"detail":"The site owner has banned your access."}')
+    assert B.error_text(cf) == \
+        "Error 1010: Access denied：The site owner has banned your access.", \
+        B.error_text(cf)
+    print("PASS: _error_text（嵌套 JSON / 字符串 / dict / 非 JSON / Cloudflare）")
 
 
 def test_strip_images() -> None:

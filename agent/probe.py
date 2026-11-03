@@ -1,12 +1,18 @@
 """模型连通性探测：新建自定义模型前先验一次，别等开口说话才发现配错。
 
 设计原则（错误文案是产品的一部分）：
-    三种失败必须分开报，因为下一步动作完全不同 ——
+    四种失败必须分开报，因为下一步动作完全不同 ——
       连不上       → 查网络/代理/地址/服务是否启动
+      被防护拦截   → 不是 Key 的问题，别去换 Key（见 _is_waf_block）
       401/403     → 换 Key
       200 但没这个模型 → 改模型名，或者从列表里挑
 
     「连通性失败」四个字对用户毫无用处，他只会去改地址，然后依然不通。
+
+    第四种是实测踩出来的：Cloudflare 按客户端特征（典型是 User-Agent）封禁时
+    回的是 403 + Error 1010，以前这里照「401/403 → Key 不对」解释，
+    用户拿着好 Key 反复重试，方向全错。请求侧已统一带 agent.user_agent()，
+    但别的站点仍可能按 IP/指纹拦，所以这条文案必须留着并说清「不是 Key」。
 
 不发真实对话请求：一次 chat 可能几毛钱、也可能因为 prompt 太长超时。
     列模型（GET /v1/models 或 /api/tags）已经能同时验证「地址可达 + Key 有效」，
@@ -19,11 +25,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from agent import user_agent
+
 PROBE_TIMEOUT = 12          # 秒；探测要快，不能让人对着转圈等到超时上限 1800 秒
 
 
 def _headers(provider: str, api_key: str) -> dict:
-    h = {"Accept": "application/json"}
+    # UA 必须带：urllib 默认的 "Python-urllib/3.x" 会被 Cloudflare 按客户端
+    # 特征直接 403（Error 1010），实测同 Key 同地址只换 UA 就通。
+    h = {"Accept": "application/json", "User-Agent": user_agent()}
     if provider == "openai" and api_key:
         h["Authorization"] = f"Bearer {api_key}"
     return h
@@ -72,6 +82,15 @@ def probe(provider: str, host: str, api_key: str = "",
             pass
         detail = _error_detail(body)
         if e.code in (401, 403):
+            if _is_waf_block(body):
+                # 403 不等于 Key 错：Cloudflare 按客户端特征封禁就是 403 + Error 1010。
+                # 实测某中转站同 Key 同地址，Python-urllib UA 被拦、换 UA 就 200。
+                return {"ok": False, "stage": "blocked",
+                        "error": f"被站点防护拦截（HTTP {e.code}）：{detail}",
+                        "hint": "这不是 Key 的问题 —— 站点防护按客户端特征"
+                                "（User-Agent / IP 指纹等）拒绝了请求。"
+                                "浏览器能打开而这里被拦就是这种，"
+                                "换网络或找站方放行，别反复换 Key"}
             return {"ok": False, "stage": "auth",
                     "error": f"鉴权失败（HTTP {e.code}）：{detail}",
                     "hint": "Key 不对或已过期。注意 Key 区分环境（测试/正式），"
@@ -140,6 +159,20 @@ def probe(provider: str, host: str, api_key: str = "",
         else:
             out["note"] = "连通正常，但该站没有返回任何模型；模型名请自行确认"
     return out
+
+
+def _is_waf_block(body: str) -> bool:
+    """403 到底是「Key 不对」还是「被防护拦了」—— 靠错误体认。
+
+    Cloudflare 按客户端特征封禁（Error 1010: Access denied）时，两种形态都出现过：
+        纯文本  "error code: 1010"
+        JSON    {"type":".../error-1010/","title":"Error 1010: Access denied",
+                 "detail":"The site owner has banned your access based on your browser's signature."}
+    这两种都跟 Key 无关，报成「换 Key」会让人拿着一把好 Key 反复试。
+    """
+    low = (body or "").lower()
+    return ("1010" in low and ("error" in low or "cloudflare" in low)) or \
+           ("cloudflare" in low and "access denied" in low)
 
 
 def _is_loopback(host: str) -> bool:

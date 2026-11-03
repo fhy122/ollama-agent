@@ -316,6 +316,77 @@ def test_probe_parse_models():
     assert pb._parse_models("ollama", "不是 dict") == []
 
 
+def test_probe_headers_use_global_user_agent():
+    """请求头里的 UA 必须引用 agent.user_agent()，不许写死字面量。
+
+    判据是「等于全局函数的值」而不是「等于某个固定串」：
+    这样改 __version__ 后测试仍然通过 —— 只有把字面量抄进请求里才会红。
+    urllib 默认的 Python-urllib/3.x 会被 Cloudflare 按客户端特征 403
+    （Error 1010），实测同 Key 同地址只换 UA 就从 403 变 200。
+    """
+    from agent import user_agent
+
+    h = pb._headers("openai", "sk-test")
+    assert h["User-Agent"] == user_agent(), h
+    assert "Python-urllib" not in h["User-Agent"], h
+    assert h["Authorization"] == "Bearer sk-test", h
+
+    # Ollama 原生协议没有鉴权头，但 UA 一样得带（也一样会经过 nginx/Cloudflare）
+    o = pb._headers("ollama", "sk-test")
+    assert o["User-Agent"] == user_agent() and "Authorization" not in o, o
+
+
+def _http_error(code: int, body: bytes):
+    """造一个 urlopen 会抛的 HTTPError，用来离线测错误分类（不联网）。"""
+    import io
+    import urllib.error
+
+    def _raise(req, timeout=None):
+        raise urllib.error.HTTPError(
+            getattr(req, "full_url", "https://relay.example/v1/models"),
+            code, "error", {}, io.BytesIO(body))
+
+    return _raise
+
+
+def test_probe_cloudflare_1010_is_not_key_problem():
+    """Cloudflare Error 1010 是按客户端特征封的，不是 Key 错。
+
+    实测踩过：文案写「Key 不对或已过期」，人拿着一把好 Key 反复重试，
+    方向全错。所以 403 + 1010 必须单独报，且明确说「不是 Key」。
+    """
+    body = ('{"type":"https://developers.cloudflare.com/ai-status-codes/'
+            'cloudflare-1xx-errors/error-1010/","title":"Error 1010: Access denied",'
+            '"status":403,"detail":"The site owner has banned your access based on '
+            'your browser\'s signature."}').encode()
+    orig = pb.urllib.request.urlopen
+    pb.urllib.request.urlopen = _http_error(403, body)
+    try:
+        r = pb.probe("openai", "https://relay.example/v1", api_key="sk-good")
+    finally:
+        pb.urllib.request.urlopen = orig
+
+    assert not r["ok"] and r["stage"] == "blocked", r
+    assert "1010" in r["error"] or "拦截" in r["error"], r
+    assert "Key" not in r["error"], f"不能把防护拦截说成 Key 问题: {r['error']}"
+    assert "不是 Key" in r["hint"], f"要明说不是 Key 的问题: {r['hint']}"
+
+
+def test_probe_real_401_still_blames_key():
+    """真鉴权失败仍然是「换 Key」—— 上面的新分支不能把 403/401 全吃掉。"""
+    body = b'{"error":{"message":"Invalid API key","code":"invalid_api_key"}}'
+    orig = pb.urllib.request.urlopen
+    pb.urllib.request.urlopen = _http_error(401, body)
+    try:
+        r = pb.probe("openai", "https://relay.example/v1", api_key="sk-bad")
+    finally:
+        pb.urllib.request.urlopen = orig
+
+    assert not r["ok"] and r["stage"] == "auth", r
+    assert "Key" in r["hint"], r["hint"]
+    assert "Invalid API key" in r["error"], r
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
