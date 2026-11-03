@@ -269,6 +269,49 @@ def _pdf_text(path: Path, pages: str | None = None) -> str:
         doc.close()
 
 
+def iter_pdf_pages(path: Path, limit: int = 0):
+    """逐页产出 (页码, 文字)。给长文分段精读用：不一次性把全文堆进内存。
+
+    limit>0 时最多产这么多页。抽不到文字的页产出空串，由调用方决定怎么提示。
+    """
+    pymupdf, doc = _open_pdf(path)
+    try:
+        total = doc.page_count
+        for no in range(1, total + 1):
+            if limit and no > limit:
+                return
+            yield no, _tidy_pdf_text(doc[no - 1].get_text("text"))
+    finally:
+        doc.close()
+
+
+def pdf_page_count(path: Path) -> int:
+    pymupdf, doc = _open_pdf(path)
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
+
+
+def pptx_slide_count(path: Path) -> int:
+    with zipfile.ZipFile(path) as z:
+        return sum(1 for n in z.namelist()
+                   if re.match(r"ppt/slides/slide\d+\.xml$", n))
+
+
+def iter_pptx_slides(path: Path):
+    """逐页产出 (页码, 文字)。与 _pptx_text 同源，只是不攒成一个大字符串。"""
+    with zipfile.ZipFile(path) as z:
+        slides = sorted(
+            (n for n in z.namelist() if re.match(r"ppt/slides/slide\d+\.xml$", n)),
+            key=lambda n: int(re.search(r"\d+", Path(n).stem).group()),
+        )
+        for i, sn in enumerate(slides, 1):
+            root = ET.fromstring(z.read(sn))
+            texts = [(t.text or "").strip() for t in root.iter(f"{_A_NS}t")]
+            yield i, "\n".join(t for t in texts if t)
+
+
 def pdf_render_page(path: Path, page: int = 1, dpi: int = PDF_RENDER_DPI) -> tuple[bytes, int, int]:
     """把 PDF 指定页渲染成 PNG。返回 (png 字节, 实际页码, 总页数)。
 

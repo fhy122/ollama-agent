@@ -24,7 +24,7 @@ t0 = time.time()
 chunks = 0
 chars = 0
 try:
-    resp = client._post_chat(client._base_payload(msgs))
+    resp = client._post_stream(msgs, None)
     for raw in resp:
         chunks += 1
         line = raw.decode("utf-8", "replace").strip()

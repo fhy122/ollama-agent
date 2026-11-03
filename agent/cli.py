@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from agent.client import OllamaClient
+from agent.backends import create_client
 from agent.config import DEFAULT_CTX, DEFAULT_HOST, DEFAULT_MODEL, MAX_TOOL_STEPS, \
     THINK_VALUES, AgentConfig
 from agent.console import color, setup_stdio
@@ -189,11 +189,33 @@ def _match_skills(workspace: Path, query: str) -> list[dict]:
                      if q in s["name"].lower() or q in s["display"].lower()]
 
 
+# Key 从环境变量读，避免写进命令行被 shell history 记下来。
+# 按顺序取第一个非空的；专用名放前面，通用名兜底。
+API_KEY_ENVS = ("AI_GATE_HUB_KEY", "OLLAMA_AGENT_API_KEY", "OPENAI_API_KEY")
+
+
+def _api_key_from_env(explicit: str = "") -> str:
+    if explicit:
+        return explicit.strip()
+    for name in API_KEY_ENVS:
+        v = (os.environ.get(name) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="ollama_agent",
-        description="极简本地 Ollama Agent（工具插件化 + think 开关，默认关思考）")
-    ap.add_argument("--host", default=DEFAULT_HOST, help=f"Ollama 地址，默认 {DEFAULT_HOST}")
+        description="极简本地 Agent（Ollama / OpenAI 兼容后端 + 工具插件化）")
+    ap.add_argument("--host", default=DEFAULT_HOST,
+                    help=f"后端地址，默认 {DEFAULT_HOST}；中转站填 https://xxx/v1")
+    ap.add_argument("--provider", default="auto", choices=["auto", "ollama", "openai"],
+                    help="后端协议：ollama=/api/chat；openai=/v1/chat/completions；"
+                         "auto=按 host 猜（带 /v1 判为 openai），默认 auto")
+    ap.add_argument("--api-key", default="",
+                    help="API Key（provider=openai 需要；也可用环境变量 "
+                         "OLLAMA_AGENT_API_KEY / AI_GATE_HUB_KEY）")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"模型名，默认 {DEFAULT_MODEL}")
     ap.add_argument("--think", default="off", choices=list(THINK_VALUES),
                     help="思考模式，默认 off（think=false）。auto=不传 think 字段")
@@ -234,13 +256,17 @@ def load_images(paths: list[str], use_color: bool) -> list[str]:
     return out
 
 
-def make_context(cfg: AgentConfig, workspace: Path) -> ToolContext:
+def make_context(cfg: AgentConfig, workspace: Path, client=None) -> ToolContext:
     def ask(what: str) -> bool:
         ans = input(color(f"? 允许执行 {what} ? [y/N] ", "yellow", cfg.use_color)).strip().lower()
         return ans in ("y", "yes")
 
+    def notice(text: str) -> None:
+        print(color(text, "yellow", cfg.use_color), flush=True)
+
     return ToolContext(confirm=cfg.confirm, use_color=cfg.use_color, ask=ask,
-                       workspace=workspace)
+                       workspace=workspace, cfg=cfg, client=client,
+                       notice=notice)
 
 
 def main(argv: list[str] | None = None):
@@ -250,6 +276,8 @@ def main(argv: list[str] | None = None):
 
     cfg = AgentConfig(
         host=args.host,
+        provider=args.provider,
+        api_key=_api_key_from_env(args.api_key),
         model=args.model,
         think=args.think,
         num_ctx=(args.ctx if args.ctx > 0 else None),
@@ -276,11 +304,11 @@ def main(argv: list[str] | None = None):
         app.serve(open_browser=True)
         return
 
-    client = OllamaClient(cfg)
-    ctx = make_context(cfg, workspace)
+    client = create_client(cfg)
+    ctx = make_context(cfg, workspace, client)
     history = new_history(str(workspace))
 
-    print(color(f"Ollama Agent | 模型 {cfg.model} | think={cfg.think} "
+    print(color(f"{client.name} | 模型 {cfg.model} | think={cfg.think} "
                 f"| ctx={cfg.num_ctx or '服务端默认'}", "bold", use_color), flush=True)
     print(color(f"工作空间: {workspace}", "dim", use_color), flush=True)
 
@@ -300,7 +328,7 @@ def main(argv: list[str] | None = None):
         send_text = text or "看一下我附带的内容"
         if at_files:
             listing = "\n".join(f"- {p}" for p in at_files)
-            send_text += (f"\n\n[我附带的文件，请按需用 read_file/load_image 读取]\n{listing}")
+            send_text += (f"\n\n[我附带的文件：短的用 read_file 读；很长（几十万字/几百页）的必须用 read_long_doc 分段精读]\n{listing}")
         try:
             run_turn(client, cfg, ctx, history, send_text, imgs or None)
         except KeyboardInterrupt:
@@ -596,7 +624,7 @@ def main(argv: list[str] | None = None):
         all_files = pending_files + at_files
         if all_files:
             listing = "\n".join(f"- {p}" for p in all_files)
-            send_text += (f"\n\n[我附带的文件，请按需用 read_file/load_image 读取]\n{listing}")
+            send_text += (f"\n\n[我附带的文件：短的用 read_file 读；很长（几十万字/几百页）的必须用 read_long_doc 分段精读]\n{listing}")
             pending_files = []
         try:
             run_turn(client, cfg, ctx, history, send_text, imgs)

@@ -5,7 +5,11 @@ from dataclasses import dataclass
 
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_HOST = "http://localhost:11434"
+DEFAULT_PROVIDER = "ollama"          # ollama | openai，见 agent/providers.py
 DEFAULT_CTX = 65536
+# num_ctx 上限：ollama 会照单全收这个值并尝试分配 KV cache，
+# 填 10**9 只会换来一个难以归因的 OOM。这里按本地大模型的实际天花板截住。
+MAX_CTX = 1_048_576
 MAX_TOOL_STEPS = 12
 
 # think 字段取值：off=False 关思考（默认）；auto=完全不传该字段（兼容不支持思考的模型）
@@ -41,6 +45,8 @@ SYSTEM_PROMPT = (
 @dataclass
 class AgentConfig:
     host: str = DEFAULT_HOST
+    provider: str = DEFAULT_PROVIDER       # ollama=原生 /api/chat；openai=兼容 /v1
+    api_key: str = ""                      # 仅 provider=openai 用；ollama 忽略
     model: str = DEFAULT_MODEL
     think: str = "off"                 # 键名，见 THINK_VALUES
     num_ctx: int | None = DEFAULT_CTX  # None = 不传 num_ctx（用 Ollama 服务端默认）
@@ -58,3 +64,11 @@ class AgentConfig:
     @property
     def think_value(self):
         return THINK_VALUES[self.think]
+
+    @property
+    def resolved_provider(self) -> str:
+        """实际生效的协议。provider=auto 时按 host 猜（带 /v1 就是 OpenAI 兼容）。"""
+        from agent.providers import OLLAMA, detect_provider
+        if self.provider in ("ollama", "openai"):
+            return self.provider
+        return detect_provider(self.host) if self.host else OLLAMA

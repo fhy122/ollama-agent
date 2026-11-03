@@ -53,7 +53,11 @@ ollama-agent/
 │  ├─ config.py               默认值 + SYSTEM_PROMPT + AgentConfig（全局唯一配置对象）
 │  ├─ registry.py             工具抽象 Tool / ToolContext / ToolResult + 全局注册表 + @tool
 │  ├─ loop.py                 run_turn：一次用户回合的全部编排（唯一编排点）
-│  ├─ client.py               OllamaClient：/api/chat 流式（唯一协议出口）
+│  ├─ client.py               兼容门面，re-export agent/backends/（老代码的 import 路径）
+│  ├─ backends/               ★ 协议实现：base.py 协议无关部分 + ollama.py + openai_compat.py
+│  ├─ providers.py            两种协议的 URL 拼装（/api/* 与 /v1/*）
+│  ├─ userconfig.py           模型配置持久化（~/.ollama-agent/config.json）
+│  ├─ probe.py                新建模型前的连通性探测（只列模型，不发对话）
 │  ├─ events.py               ConsoleEmitter：终端事件输出
 │  ├─ cli.py                  build_parser + main()：REPL、斜杠命令、@引用、面板/热键接线
 │  ├─ palette.py              终端行内面板状态机 + raw 控制台读取（Windows）
@@ -93,12 +97,21 @@ ollama-agent/
 │     ├─ app.js               全部前端逻辑：流解析、工具卡片、confirm、/ 与 @ 面板
 │     └─ style.css            样式
 │
-├─ tests/                     ★ 回归（脚本式 main()，非 pytest）
-│  ├─ test_tools.py           15 个工具 + 路径 + xlsx/docx + 面板按键（708 行，主回归）
+├─ tests/                     ★ 回归（脚本式 main() 为主，后端/配置类用 pytest）
+│  ├─ test_tools.py           15 个工具 + 路径 + xlsx/docx + 面板按键（主回归）
 │  ├─ test_cli_palette_console.py  真 Windows 控制台里的面板重绘
 │  ├─ test_webui.py           API + ConfirmGate + NDJSON
 │  ├─ test_client_errors.py   400 分支、图片剥离、错误文本压平
-│  └─ test_interrupt.py       打断收尾、历史合法性
+│  ├─ test_interrupt.py       打断收尾、历史合法性
+│  ├─ test_userconfig.py      模型配置持久化 + 探测文案（26 个用例，含诊断指路）
+│  ├─ test_backends.py        pytest：两种协议拼路径 / 能力差异 / 不越界
+│  ├─ test_providers.py       pytest：URL 拼装与规范化
+│  ├─ test_capabilities.py    pytest：能力标记决定什么参数能下发
+│  ├─ test_ui_models.py       Playwright：模型管理界面（新建→测连通→保存→编辑→删除）
+│  ├─ test_ui_ws_files.py     Playwright：工作空间文件列表位置与预览
+│  ├─ test_ui_sidebar.py      Playwright：侧栏收起/展开/窄屏
+│  ├─ test_sessions.py        多会话持久化 + 搜索 + 接口
+│  └─ test_ui_search.py / test_ui_reset.py   历史搜索 / 清空对话
 │
 └─ evals/                     ☆ 需要模型的评测（辅助工具，不属于上面四层）
    └─ tool_hit.py             工具命中率：20 条用户话术 → 期望工具，只问不执行，约 14 分钟
@@ -136,10 +149,17 @@ ollama-agent/
 
 | 文件 | 行 | 关键符号 | 具体做什么 | 被谁用 |
 |---|---|---|---|---|
-| `agent/config.py` | 68 | `SYSTEM_PROMPT`、`THINK_VALUES`、`AgentConfig` | 默认模型 `qwen3.5:9b`、默认 ctx 65536、12 步上限；系统提示词 8 条规则 | 所有模块 |
+| `agent/config.py` | 74 | `SYSTEM_PROMPT`、`THINK_VALUES`、`MAX_CTX`、`AgentConfig` | 默认模型 `qwen3.5:9b`、默认 ctx 65536（上限 1048576）、12 步上限；系统提示词 8 条规则 | 所有模块 |
 | `agent/registry.py` | 117 | `ToolResult`、`ToolContext.resolve/approve`、`Tool.run/spec`、`@tool`、`dispatch` | 工具契约 + 全局注册表；`resolve()` 定义"相对路径锚定工作空间" | loop、所有 tools |
 | `agent/loop.py` | 164 | `new_history`、`run_turn`、`strip_old_images`、`pad_unanswered_tool_calls` | 拼系统提示 + 技能索引；跑最多 `max_steps` 步"模型↔工具"循环 | cli、webui.session |
-| `agent/client.py` | 234 | `OllamaClient.chat/warmup/list_models`、`_error_text`、`_strip_images` | 流式解析 `/api/chat`；tool_calls 按下标合并；两类 400 自动重试 | loop.cli |
+| `agent/backends/base.py` | 449 | `ChatClient`、`StreamParser`、`error_text` | 协议无关部分：连接/中断/流读取/重试；能力标记 `supports_*` 默认 False | 两个具体后端 |
+| `agent/backends/ollama.py` | 132 | `OllamaClient`、`OllamaStreamParser` | `/api/chat` 原生协议；整行 JSON + `done` 帧；四项能力全 True | 工厂 |
+| `agent/backends/openai_compat.py` | 158 | `OpenAICompatClient`、`OpenAIStreamParser` | `/v1/chat/completions`；SSE + `[DONE]`；tool_call 参数分片累积；能力全 False | 工厂 |
+| `agent/backends/openai_messages.py` | 109 | `to_openai_messages` | 消息格式转换：`tool_call_id` 复用、图片转 data URL | openai_compat |
+| `agent/client.py` | 33 | 仅 re-export | 历史兼容门面，实现在 `agent/backends/` | 老代码 |
+| `agent/providers.py` | 88 | `endpoint`、`normalize_host` | 两种协议的 URL 拼装（`/api/*` vs `/v1/*`），拼错就是 404 的唯一来源 | backends、`agent/probe` |
+| `agent/userconfig.py` | 268 | `ConfigStore.load/save/get_profile/upsert_profile/delete_profile`、`mask_key`、`to_agent_patch`、`BUILTIN_ID` | 模型配置持久化到 `~/.ollama-agent/config.json`；`profiles` 记「连哪个模型」，`ui` 记使用习惯；内置 Ollama 是**虚拟条目**不落盘；Key 明文存盘但对外只给打码 | `webui/session` |
+| `agent/probe.py` | 171 | `probe`、`_parse_models`、`_is_loopback` | 新建模型前测连通：只打 `GET /v1/models` 或 `/api/tags`，不发对话请求；失败按 `url/auth/connect/http/parse` 分开报并附 `hint`；本机地址报 502 时点明「多半是本地服务没起或代理拦了本机」 | `webui/server` 的 `/api/models/probe` |
 
 **交互与入口**
 
@@ -183,11 +203,11 @@ ollama-agent/
 
 | 文件 | 行 | 关键符号 | 具体做什么 |
 |---|---|---|---|
-| `webui/server.py` | 321 | `make_handler`、`WebUIApp.serve/start_hotkey` | 路由表：`/`、`/static/*`、`/api/{health,config,pending,skills,files}`（GET）；`/api/{chat,config,confirm,reset,stop,paste,upload}`（POST） |
-| `webui/session.py` | 450 | `AgentSession.run/request_stop/update_config/load_skill/open_session/new_session/delete_session`、`RecordingEmitter`、`ConfirmGate.ask/answer/reject_all` | 单会话 + `threading.Lock` 串行跑回合；回合事件边转发边记账，回合结束落盘；确认闸用 `Event` 阻塞、300s 超时拒绝 |
+| `webui/server.py` | 592 | `make_handler`、`WebUIApp.serve/start_hotkey`、`_safe_list_models` | 路由表：`/`、`/static/*`、`/api/{health,config,pending,skills,files,models,sessions}`（GET）；`/api/{chat,config,confirm,reset,stop,paste,upload,models/probe,models/save,models/activate,models/delete,sessions/new,sessions/open,sessions/delete}`（POST）。列模型走 `_safe_list_models` 带 6s 预算，超时返回空而不是把设置面板卡住 |
+| `webui/session.py` | 815 | `AgentSession.run/request_stop/update_config/profiles_view/save_profile/activate_profile/delete_profile`、`RecordingEmitter`、`ConfirmGate.ask/answer/reject_all` | 单会话 + `threading.Lock` 串行跑回合；启动时按 `active` 恢复上次的模型配置；回合事件边转发边记账，回合结束落盘；确认闸用 `Event` 阻塞、300s 超时拒绝。**锁的纪律**：只在改配置数据时持锁，应用配置（`_apply_profile`→`update_config`）必须放锁外，否则不可重入锁自己锁死自己 |
 | `webui/store.py` | 261 | `SessionStore.list/load/save/create/delete/purge_empty/search`、`make_title` | 一条对话一个 JSON（history 给模型、turns 给界面回放）；临时文件 + `os.replace` 原子写；空会话不进列表；`search()` 扫 turns 正文（提问/回答/思考/工具），多词 AND，片段带上下文 |
 | `webui/stream.py` | 82 | `StreamEmitter`（8 方法 + `confirm`） | 事件写 NDJSON；写失败判断连 → 回调 `request_stop` |
-| `webui/static/app.js` | 712 | `send()`、事件 switch、面板、上传、设置 | 解析 NDJSON 逐事件渲染；`/` `@` 面板与 CLI 同语义 |
+| `webui/static/app.js` | 1850 | `send()`、事件 switch、面板、上传、设置、`loadModels/renderBuiltin/renderCustom/openModelForm/probeModel/saveModel` | 解析 NDJSON 逐事件渲染；`/` `@` 面板与 CLI 同语义；设置抽屉两个标签页（模型管理/偏好），模型管理区分「内置」与「自定义」两块 |
 
 ### 2.5 模块调用关系（静态：谁调谁）
 

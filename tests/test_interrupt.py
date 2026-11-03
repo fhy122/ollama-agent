@@ -43,7 +43,7 @@ def _make_client(resp):
     cli._current_conn = None
     cli._current_resp = None
     cli._abort_requested = False
-    cli._post_chat = lambda payload: resp
+    cli._post_stream = lambda messages, tools: resp
     return cli
 
 

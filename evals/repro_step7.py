@@ -17,18 +17,27 @@ from agent.registry import all_specs
 
 SESSION = pathlib.Path.home() / ".ollama-agent" / "sessions" / "20261101-222440-bo7h.json"
 
+if not SESSION.is_file():
+    # 这是针对某一次断流的一次性排障脚本，会话文件不在了就没法重放。
+    # 与其抛一屏 FileNotFoundError，不如说清怎么换一个会话。
+    import glob
+    cands = sorted(glob.glob(str(SESSION.parent / "*.json")))[-3:]
+    print(f"找不到要重放的会话：{SESSION}")
+    print("用法：把本文件里 SESSION 改成要分析的会话文件。现有会话（最近 3 条）：")
+    for c in cands:
+        print("  ", c)
+    sys.exit(1)
+
 d = json.loads(SESSION.read_text(encoding="utf-8"))
 history = d["history"]
 print(f"历史 {len(history)} 条，模型 {d['model']}，工作空间 {d['workspace']}")
 
 cfg = AgentConfig(model=d["model"], workspace=d["workspace"])
 client = OllamaClient(cfg)
-payload = client._base_payload(history)
-payload["tools"] = all_specs()
 
 print("发出请求…")
 t0 = time.time()
-resp = client._post_chat(payload)
+resp = client._post_stream(history, all_specs())
 
 last = t0
 gaps = []

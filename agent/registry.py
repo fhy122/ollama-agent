@@ -24,11 +24,35 @@ class ToolResult:
 
 @dataclass
 class ToolContext:
-    """执行环境，由 CLI 注入。"""
+    """执行环境，由 CLI / WebUI 注入。
+
+    client / cfg / notice / cancel 是给「需要自己发子请求」的工具用的
+    （目前只有 read_long_doc：它要逐段读文档、自己调模型记笔记）。
+    普通工具不该碰这几个字段 —— 它们只做纯函数式的读写。
+    """
     confirm: bool = False
     use_color: bool = True
     ask: Callable[[str], bool] | None = None
     workspace: Path = field(default_factory=Path.cwd)
+    cfg: Any = None                          # AgentConfig（读 num_ctx 等）
+    client: Any = None                       # 聊天客户端（子请求用）
+    notice: Callable[[str], None] | None = None   # 进度提示 → 前端
+    cancel: Any = None                       # threading.Event，置位即中断
+
+    def say(self, text: str) -> None:
+        """向用户播一条进度提示；没接发射器时静默（离线测试/纯工具场景）。"""
+        if self.notice is not None:
+            try:
+                self.notice(text)
+            except Exception:
+                pass
+
+    def stopped(self) -> bool:
+        c = self.cancel
+        return bool(c is not None and getattr(c, "is_set", lambda: False)())
+
+    def num_ctx(self) -> int | None:
+        return getattr(self.cfg, "num_ctx", None) if self.cfg is not None else None
 
     def resolve(self, path: str | Path | None) -> Path:
         """把工具收到的路径解析成绝对路径。

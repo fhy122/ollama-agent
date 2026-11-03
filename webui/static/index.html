@@ -48,6 +48,12 @@
         </div>
         <div class="sessions" id="session-list"><p class="sb-empty">还没有历史对话</p></div>
       </div>
+      <div class="sb-section">
+        <div class="sb-title">工作空间文件
+          <button class="link-btn" id="btn-refresh-files" title="重新扫描">刷新</button>
+        </div>
+        <div class="ws-files" id="ws-files"><p class="sb-empty">加载中…</p></div>
+      </div>
     </nav>
 
     <div class="sb-foot">
@@ -127,27 +133,85 @@
       <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
     </button>
   </div>
-  <div class="drawer-body">
-    <label class="field">模型
-      <select id="set-model"></select>
-    </label>
-    <label class="field">思考模式（默认关）
-      <select id="set-think">
-        <option value="off">off — 不思考（think=false）</option>
-        <option value="on">on — 思考</option>
-        <option value="low">low</option>
-        <option value="medium">medium</option>
-        <option value="high">high</option>
-        <option value="max">max</option>
-        <option value="auto">auto — 不传 think 字段</option>
-      </select>
-    </label>
-    <label class="field">num_ctx（改值会触发模型重载）
-      <input type="number" id="set-ctx" step="1024" min="0" placeholder="0 = 服务端默认">
-    </label>
-    <label class="field">temperature
-      <input type="number" id="set-temp" step="0.1" min="0" max="2">
-    </label>
+  <div class="set-tabs" role="tablist">
+    <button class="set-tab active" data-tab="models" role="tab">模型管理</button>
+    <button class="set-tab" data-tab="prefs" role="tab">偏好</button>
+  </div>
+
+  <!-- ---------- 模型管理 ---------- -->
+  <div class="drawer-body" id="tab-models">
+    <div class="drawer-sec">
+      <div class="sb-title">内置 · 本地 Ollama
+        <button class="link-btn" id="btn-refresh-builtin" title="重新读取 /api/tags">刷新</button>
+      </div>
+      <p class="drawer-note" id="builtin-note"></p>
+      <div class="model-list" id="builtin-models"></div>
+    </div>
+
+    <div class="drawer-sec">
+      <div class="sb-title">自定义模型 · OpenAI 兼容 / 其它
+        <button class="link-btn" id="btn-new-model">＋ 新建</button>
+      </div>
+      <div class="model-list" id="custom-models"></div>
+      <p class="drawer-note">配置存在 <span id="cfg-path">~/.ollama-agent/config.json</span>，重启后仍在。</p>
+    </div>
+
+    <!-- 新建 / 编辑表单 -->
+    <div class="model-form hidden" id="model-form">
+      <div class="form-head">
+        <div class="sb-title form-sticky" id="model-form-title">新建自定义模型</div>
+        <label class="field">显示名（随便取，方便自己认）
+          <input type="text" id="mf-name" placeholder="例如 DeepSeek 中转站">
+        </label>
+      </div>
+      <label class="field">协议类型
+        <select id="mf-provider">
+          <option value="openai">OpenAI 兼容（/v1/chat/completions）</option>
+          <option value="ollama">Ollama 原生（/api/chat）</option>
+        </select>
+      </label>
+      <label class="field">服务地址（OpenAI 兼容要指到 /v1）
+        <input type="text" id="mf-host" placeholder="https://api.deepseek.com/v1">
+      </label>
+      <label class="field">API Key
+        <input type="password" id="mf-key" placeholder="sk-…；Ollama 不需要，可留空">
+      </label>
+      <div class="model-form-actions">
+        <button class="ghost sm" id="btn-mf-probe">测试连通性</button>
+        <span class="probe-result" id="mf-probe-result"></span>
+      </div>
+      <label class="field">模型名称
+        <input type="text" id="mf-model" list="mf-model-options" placeholder="先点测试，会列出该站的模型">
+        <datalist id="mf-model-options"></datalist>
+      </label>
+      <label class="field">思考模式
+        <select id="mf-think">
+          <option value="off">off — 不思考</option>
+          <option value="on">on</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+          <option value="auto">auto — 不传该字段</option>
+        </select>
+      </label>
+      <label class="field">num_ctx（仅 Ollama 生效）
+        <input type="number" id="mf-ctx" step="1024" min="0" placeholder="0 = 服务端默认">
+      </label>
+      <label class="field">temperature
+        <input type="number" id="mf-temp" step="0.1" min="0" max="2" value="0.7">
+      </label>
+      <p class="drawer-note" id="mf-note"></p>
+      <div class="model-form-actions">
+        <button class="primary sm" id="btn-mf-save">保存</button>
+        <button class="ghost sm" id="btn-mf-cancel">取消</button>
+        <button class="danger sm hidden" id="btn-mf-delete">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- 偏好 ---------- -->
+  <div class="drawer-body hidden" id="tab-prefs">
     <label class="field">单回合最大工具步数
       <input type="number" id="set-steps" step="1" min="1" max="50">
     </label>
@@ -161,16 +225,29 @@
       <input type="text" id="set-ws" placeholder="例如 D:/docs">
     </label>
     <p class="drawer-note">工作空间变更会新开一条对话（旧对话仍在历史列表里）。工具写文件前可在工具卡片里看到完整参数。</p>
-    <div class="drawer-sec">
-      <div class="sb-title">工作空间文件
-        <button class="link-btn" id="btn-refresh-files" title="重新扫描">刷新</button>
-      </div>
-      <div class="ws-files" id="ws-files"><p class="sb-empty">加载中…</p></div>
-    </div>
+    <label class="field">思考模式（仅 Ollama 生效）
+      <select id="set-think">
+        <option value="off">off — 不思考（think=false）</option>
+        <option value="on">on — 思考</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="max">max</option>
+        <option value="auto">auto — 不传 think 字段</option>
+      </select>
+    </label>
+    <label class="field">num_ctx（仅 Ollama 生效，改值会触发模型重载）
+      <input type="number" id="set-ctx" step="1024" min="0" placeholder="0 = 服务端默认">
+    </label>
+    <label class="field">temperature
+      <input type="number" id="set-temp" step="0.1" min="0" max="2">
+    </label>
+    <p class="drawer-note" id="prefs-cap-note"></p>
   </div>
+
   <div class="drawer-actions">
-    <button class="primary" id="btn-apply">应用</button>
-    <button class="ghost" id="btn-refresh-models">刷新模型列表</button>
+    <button class="primary" id="btn-apply">应用偏好</button>
+    <button class="ghost" id="btn-refresh-models">刷新全部</button>
   </div>
 </aside>
 

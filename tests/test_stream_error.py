@@ -17,12 +17,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import agent.client as C  # noqa: E402
+import agent.backends.base as B  # noqa: E402
+from agent.backends import OllamaClient  # noqa: E402
 from agent.config import AgentConfig  # noqa: E402
 from agent.loop import run_turn  # noqa: E402
 from agent.registry import ToolContext  # noqa: E402
 
-REAL_CONN = C.http.client.HTTPConnection
+REAL_CONN = B.http.client.HTTPConnection
 
 
 def _line(obj: dict) -> bytes:
@@ -59,8 +60,8 @@ class _Stream:
         self.closed = True
 
 
-def _client() -> C.OllamaClient:
-    cli = C.OllamaClient.__new__(C.OllamaClient)
+def _client() -> OllamaClient:
+    cli = OllamaClient.__new__(OllamaClient)
     cli.cfg = AgentConfig(use_color=False, warm=False)
     cli.host = "http://t"
     cli.model = "m"
@@ -94,7 +95,7 @@ def _patched(stream: _Stream):
         def close(self):
             self.closed = True
 
-    C.http.client.HTTPConnection = _Conn
+    B.http.client.HTTPConnection = _Conn
     return stream
 
 
@@ -104,7 +105,7 @@ def test_no_done_frame() -> None:
     try:
         r = _client().chat([{"role": "user", "content": "x"}])
     finally:
-        C.http.client.HTTPConnection = REAL_CONN
+        B.http.client.HTTPConnection = REAL_CONN
     assert r["content"] == "前半段后半段", r
     assert r["error"], "缺 done 帧必须标记为断流"
     assert "done" in r["error"], r["error"]
@@ -119,7 +120,7 @@ def test_timeout_midstream() -> None:
     try:
         r = _client().chat([{"role": "user", "content": "x"}])
     finally:
-        C.http.client.HTTPConnection = REAL_CONN
+        B.http.client.HTTPConnection = REAL_CONN
     assert r["content"] == "已经说了一半", r
     assert "TimeoutError" in (r["error"] or ""), r["error"]
     assert stream.closed is True
@@ -136,7 +137,7 @@ def test_tool_calls_dropped() -> None:
     try:
         r = _client().chat([{"role": "user", "content": "x"}])
     finally:
-        C.http.client.HTTPConnection = REAL_CONN
+        B.http.client.HTTPConnection = REAL_CONN
     assert r["content"] == "我来写文件", r
     assert r["tool_calls"] == [], f"半截工具调用必须丢弃，实际 {r['tool_calls']}"
     assert "ConnectionResetError" in (r["error"] or ""), r["error"]
@@ -215,7 +216,7 @@ def test_post_chat_first_byte_timeout() -> None:
         def close(self):
             pass
 
-    C.http.client.HTTPConnection = _Conn
+    B.http.client.HTTPConnection = _Conn
     try:
         try:
             _client().chat([{"role": "user", "content": "x"}])
@@ -224,7 +225,7 @@ def test_post_chat_first_byte_timeout() -> None:
             msg = str(e)
             assert "timeout" in msg and "秒" in msg, msg
     finally:
-        C.http.client.HTTPConnection = REAL_CONN
+        B.http.client.HTTPConnection = REAL_CONN
     print("PASS: 首字节超时 → 可读提示（含调参建议）")
 
 

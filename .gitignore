@@ -9,6 +9,10 @@ __pycache__/
 .uploads/
 .ck_probe/
 
+# 长文精读的笔记库（跟着工作空间走，落在 <工作空间>/.ollama-agent/notes/）。
+# 这是「我读过什么」的运行时产物，不属于源码；同目录将来还会有别的状态。
+.ollama-agent/
+
 # Playwright 持久化浏览器 profile（browse_url / web_search 用，十几 MB）
 .bing_profile/
 

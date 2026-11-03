@@ -3,8 +3,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent import docparse
+from agent import docparse, longdoc
 from agent.registry import ToolContext, ToolResult, tool
+
+
+def _long_hint(ctx: ToolContext, chars: int) -> str:
+    """超出单次可读量时，附一段「改用 read_long_doc」的硬指令。
+
+    为什么要在 read_file 里主动劝退：文档一超长，模型的标准应对就是
+    read_file(offset=200) → (offset=400) → …，十几步之后步数耗尽，
+    而它手里只有开头几段，却会当成全文答。把出口直接写在它第一次读的地方最有效。
+    """
+    n = ctx.num_ctx()
+    if not longdoc.too_long(chars, n):
+        return ""
+    return longdoc.long_read_hint(chars, n)
+
 
 # WebUI 拖入/上传的附件目录（webui/server.py handle_upload 写这里）
 UPLOAD_DIRNAME = ".uploads"
@@ -46,6 +60,9 @@ def _missing_hint(p: Path, ws: Path) -> str:
         "Word(.docx)、Excel(.xlsx/.xlsm，按工作表返回单元格)、PPT(.pptx，按页返回)、"
         "PDF(.pdf，按页返回文字，用 pages 指定页码)。"
         "PDF 抽不出文字时说明是扫描件，改用 load_image(path=…, page=N) 渲染成图看。"
+        "【文档很长、一次读不完时（返回里带「超出单次可读量」），改用 read_long_doc "
+        "整篇分段精读】，不要靠反复翻页硬凑；只有想精读某一两段细节时才回来用 "
+        "offset/pages 取局部。"
         "用户本条消息拖入/上传的文件都在工作空间 .uploads/ 目录下，按那个路径读。"
         "相对路径在工作空间内查找；用户给了绝对路径就直接用。"
     ),
@@ -76,13 +93,22 @@ def read_file(ctx: ToolContext, path: str, pages: str | None = None,
 
     # ---- PDF（自带页码窗口，不走行号分页）----
     if p.suffix.lower() in docparse.PDF_SUFFIXES:
+        # 先看页数：几百页的 PDF 直接读只会截出前 40 万字里的开头一小截，
+        # 还不如当场告诉它换 read_long_doc
+        est = longdoc.page_estimate(p)
+        if est and longdoc.too_long(est[0] * 1200, ctx.num_ctx()):
+            pages_total, page_word = est
+            return ToolResult(
+                f"[PDF 文档] {p}  共 {pages_total} 页\n"
+                + longdoc.long_read_hint(pages_total * 1200, ctx.num_ctx())
+                + f"\n（只想看某几页时仍可用 pages=\"{'1-5'}\" 精确取）")
         try:
             _label, text = docparse.extract_text(p, pages=pages)
         except ValueError as e:
             return ToolResult(f"[错误] {e}")
         except Exception as e:
             return ToolResult(f"[错误] PDF 解析失败: {type(e).__name__}: {e}")
-        return ToolResult(text)
+        return ToolResult(text + _long_hint(ctx, len(text)))
 
     # ---- Office 文档 ----
     if p.suffix.lower() in (docparse.DOC_SUFFIXES | docparse.SHEET_SUFFIXES
@@ -94,7 +120,8 @@ def read_file(ctx: ToolContext, path: str, pages: str | None = None,
         except Exception as e:
             return ToolResult(f"[错误] 解析失败: {type(e).__name__}: {e}")
         lines = text.splitlines() or [""]
-        return ToolResult(_with_head_and_window(p, f"{label}", lines, offset, limit))
+        return ToolResult(_with_head_and_window(p, f"{label}", lines, offset, limit)
+                          + _long_hint(ctx, len(text)))
 
     # ---- 文本（含未知扩展名试探）----
     try:
@@ -105,7 +132,8 @@ def read_file(ctx: ToolContext, path: str, pages: str | None = None,
             f"图片用 load_image；docx/xlsx/pptx/pdf 用 read_file（已支持）；其它格式暂不支持"
         )
     lines = text.splitlines()
-    return ToolResult(_with_head_and_window(p, "文本", lines, offset, limit))
+    return ToolResult(_with_head_and_window(p, "文本", lines, offset, limit)
+                      + _long_hint(ctx, len(text)))
 
 
 def _with_head_and_window(p: Path, label: str, lines: list[str],

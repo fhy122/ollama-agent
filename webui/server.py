@@ -23,7 +23,8 @@ import tools as tools_pkg
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_UPLOAD = 20 * 1024 * 1024  # 20MB
-_SKIP_DIRS = {".uploads", ".clip_cache", ".workbuddy", "__pycache__", ".git", "node_modules"}
+_SKIP_DIRS = {".uploads", ".clip_cache", ".workbuddy", ".ollama-agent",
+              "__pycache__", ".git", "node_modules"}
 
 
 def _search_files(ws: Path, q: str, limit: int = 20) -> list[dict]:
@@ -53,6 +54,51 @@ def _json_body(handler: BaseHTTPRequestHandler) -> dict:
         return json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return {}
+
+
+def _full_config(app) -> dict:
+    """GET / POST 同一份配置快照：带上当前后端能列出的模型和工具清单。
+
+    切后端（本地 Ollama <-> 中转站）时模型集合完全不同，两边返回结构必须一致，
+    否则前端得靠再请求一次来猜状态。
+    """
+    snap = app.session.snapshot()
+    snap["models"] = _safe_list_models(app.session.client)
+    snap["tools"] = [
+        {"name": t.name, "description": t.description}
+        for t in tools_pkg.all_tools()
+    ]
+    snap["think_values"] = list(THINK_VALUES)
+    return snap
+
+
+# 列模型的总预算（秒）。内置 urllib 的 timeout 只管 socket 读，
+# 实测遇到「域名解析慢 / 对端不响应 TLS 握手」时能挂到十几秒以上，
+# 而这个接口是 GET /api/config 同步路径 —— 前端每次开设置、每次保存完
+# 都要调它，一挂就把整个设置面板卡成转圈。
+LIST_MODELS_BUDGET = 6.0
+
+
+def _safe_list_models(client) -> list[str]:
+    """带超时预算地列模型；超时/失败一律返回空列表，绝不阻塞设置面板。
+
+    为什么要线程兜底：urllib 的 timeout 覆盖不到所有阻塞阶段，
+    所以这里把调用丢进守护线程，超预算就直接放弃它（返回空）。
+    泄漏一个后台线程可以接受（它最终会自己超时结束），
+    但让人对着设置面板干等 15 秒不可接受。
+    """
+    box: dict = {}
+
+    def work():
+        try:
+            box["models"] = client.list_models()
+        except Exception:
+            box["models"] = []
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    th.join(LIST_MODELS_BUDGET)
+    return box.get("models") or []
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".ico", ".svg"}
@@ -183,17 +229,7 @@ def make_handler(app: "WebUIApp"):
             elif path == "/api/health":
                 self.send_json({"ok": True, "model": app.session.cfg.model})
             elif path == "/api/config":
-                snap = app.session.snapshot()
-                try:
-                    snap["models"] = app.session.client.list_models()
-                except Exception:
-                    snap["models"] = []
-                snap["tools"] = [
-                    {"name": t.name, "description": t.description}
-                    for t in tools_pkg.all_tools()
-                ]
-                snap["think_values"] = list(THINK_VALUES)
-                self.send_json(snap)
+                self.send_json(_full_config(app))
             elif path == "/api/pending":
                 self.send_json({"items": app.session.drain_clip()})
             elif path == "/api/skills":
@@ -215,6 +251,8 @@ def make_handler(app: "WebUIApp"):
                 from urllib.parse import unquote
                 self.send_json({"files": _search_files(
                     app.session.workspace, unquote(m.group(1)) if m else "")})
+            elif path == "/api/models":
+                self.send_json(app.session.profiles_view())
             elif path == "/api/file":
                 self.handle_file()
             else:
@@ -226,8 +264,10 @@ def make_handler(app: "WebUIApp"):
                 self.handle_chat()
             elif path == "/api/config":
                 body = _json_body(self)
-                snap = app.session.update_config(body)
-                self.send_json(snap)
+                app.session.update_config(body)
+                # 和 GET 返回同构：换了后端模型列表完全不同，
+                # 只回一个不带动 models 的快照，前端得再猜一次
+                self.send_json(_full_config(app))
             elif path == "/api/confirm":
                 body = _json_body(self)
                 ok = app.session.answer_confirm(
@@ -251,6 +291,20 @@ def make_handler(app: "WebUIApp"):
             elif path == "/api/stop":
                 app.session.request_stop()
                 self.send_json({"ok": True})
+            elif path == "/api/models/probe":
+                self.handle_probe()
+            elif path == "/api/models/save":
+                body = _json_body(self)
+                r = app.session.save_profile(body)
+                self.send_json(r)
+            elif path == "/api/models/activate":
+                body = _json_body(self)
+                self.send_json(app.session.activate_profile(
+                    str(body.get("id") or "")))
+            elif path == "/api/models/delete":
+                body = _json_body(self)
+                self.send_json(app.session.delete_profile(
+                    str(body.get("id") or "")))
             elif path == "/api/paste":
                 self.handle_paste()
             elif path == "/api/upload":
@@ -266,6 +320,27 @@ def make_handler(app: "WebUIApp"):
                 self.send_json(r, int(r.get("code") or 409))
             else:
                 self.send_json(r)
+
+        def handle_probe(self):
+            """测一个「还没保存」的后端配置能不能连通。
+
+            收的是表单里的原值（可能是正在编辑、尚未落盘的内容），
+            所以不能只按当前生效配置去测 —— 那样用户改完地址永远测不出效果。
+            """
+            body = _json_body(self)
+            key = str(body.get("api_key") or "").strip()
+            if not key:
+                # 前端只有打码值，编辑已有配置时 Key 框是空的。
+                # 用已保存的那把，否则「改了地址点测试」永远报「缺 Key」。
+                key = app.session.key_for(str(body.get("id") or ""))
+            from agent.probe import probe
+            r = probe(
+                str(body.get("provider") or "ollama"),
+                str(body.get("host") or ""),
+                key,
+                str(body.get("model") or ""),
+            )
+            self.send_json(r)
 
         def handle_chat(self):
             body = _json_body(self)
@@ -319,7 +394,8 @@ def make_handler(app: "WebUIApp"):
                 # 别叫它「剪贴板文件」：模型会顺着这个词去调 clipboard_image，
                 # 结果把一张截图当成 PDF 读。明确说是已上传到工作空间的文件。
                 send_text += (f"\n\n[我附带了这些文件（已上传到工作空间，不是剪贴板截图），"
-                              f"直接用 read_file 读；PDF 抽不出文字再用 load_image 按页渲染]\n"
+                              f"短的直接用 read_file 读；很长（几十万字/几百页）的必须用 "
+                              f"read_long_doc 分段精读；PDF 抽不出文字再用 load_image 按页渲染]\n"
                               f"{listing}")
             try:
                 final = app.session.run(send_text, images or None, emitter,
@@ -497,9 +573,12 @@ class WebUIApp:
         handler = make_handler(self)
         self.httpd = ThreadingHTTPServer((self.host, self.port), handler)
         url = f"http://{self.host}:{self.port}/"
-        print(f"Ollama Agent UI 已启动: {url}", flush=True)
-        print(f"模型 {self.session.cfg.model} | think={self.session.cfg.think} "
-              f"| ctx={self.session.cfg.num_ctx or '服务端默认'}", flush=True)
+        print(f"Agent UI 已启动: {url}", flush=True)
+        cli = self.session.client
+        extra = (f" | think={self.session.cfg.think}"
+                 f" | ctx={self.session.cfg.num_ctx or '服务端默认'}")
+        print(f"后端 {cli.name} ({self.session.cfg.host})"
+              f" | 模型 {self.session.cfg.model or '未选'}{extra}", flush=True)
         print(f"工作空间: {self.session.workspace}", flush=True)
         if self.start_hotkey():
             print("全局热键 Alt+V: 剪贴板图片/文件直达对话", flush=True)

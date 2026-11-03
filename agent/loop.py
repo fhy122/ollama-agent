@@ -8,7 +8,8 @@ import json
 import re
 import time
 
-from agent.client import OllamaClient
+from agent.backends import ChatClient
+from agent import longdoc
 from agent.config import SYSTEM_PROMPT, AgentConfig
 from agent.events import ConsoleEmitter
 from agent.registry import ToolContext, ToolResult
@@ -126,9 +127,11 @@ def pad_unanswered_tool_calls(history: list) -> int:
     calls = history[idx].get("tool_calls") or []
     missing = calls[answered:]
     for tc in missing:
-        history.append({"role": "tool",
-                        "content": "[已被用户打断，未执行]",
-                        "tool_name": (tc.get("function") or {}).get("name", "?")})
+        msg = {"role": "tool", "content": "[已被用户打断，未执行]",
+               "tool_name": (tc.get("function") or {}).get("name", "?")}
+        if tc.get("id"):
+            msg["tool_call_id"] = tc["id"]
+        history.append(msg)
     return len(missing)
 
 
@@ -146,7 +149,7 @@ def new_history(workspace: str | None = None) -> list:
     return [{"role": "system", "content": prompt}]
 
 
-def run_turn(client: OllamaClient, cfg: AgentConfig, ctx: ToolContext,
+def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
              history: list, user_text: str, images: list[str] | None = None,
              emitter=None, cancel=None) -> str:
     """跑一个用户回合（含多轮工具调用），返回最终回答。
@@ -157,9 +160,19 @@ def run_turn(client: OllamaClient, cfg: AgentConfig, ctx: ToolContext,
     if emitter is None:
         emitter = ConsoleEmitter(cfg)
 
+    # 需要自己发子请求的工具（read_long_doc 逐段精读）从 ctx 拿运行时依赖。
+    # 在这里统一注入，而不是各前端各写一遍：多一处遗漏就是一处「工具静默失效」。
+    ctx.cfg = cfg
+    ctx.client = client
+    ctx.notice = getattr(emitter, "notice", None)
+    if cancel is not None:
+        ctx.cancel = cancel
+
     strip_old_images(history)
 
-    user_msg = {"role": "user", "content": expert_hint(user_text)}
+    user_msg = {"role": "user",
+                "content": expert_hint(user_text) + longdoc.attachment_hint(
+                    user_text, ctx.workspace, cfg.num_ctx)}
     if images:
         user_msg["images"] = images
     history.append(user_msg)
@@ -220,10 +233,14 @@ def run_turn(client: OllamaClient, cfg: AgentConfig, ctx: ToolContext,
 
             assistant_msg: dict = {"role": "assistant", "content": content}
             if tool_calls:
+                # id 在这里统一生成，供随后 tool 消息的 tool_call_id 配对
+                # （Ollama 忽略它，OpenAI 兼容后端没它直接 400）
+                ids = [f"call_{step}_{i}" for i in range(len(tool_calls))]
                 assistant_msg["tool_calls"] = [
-                    {"function": {"name": tc["function"]["name"],
+                    {"id": ids[i],
+                     "function": {"name": tc["function"]["name"],
                                   "arguments": tc["function"]["arguments"]}}
-                    for tc in tool_calls
+                    for i, tc in enumerate(tool_calls)
                 ]
             history.append(assistant_msg)
 
@@ -240,11 +257,11 @@ def run_turn(client: OllamaClient, cfg: AgentConfig, ctx: ToolContext,
                     args = {}
                 if _stopped():
                     # 已声明未执行的 tool_calls 补占位结果，保持历史合法
-                    for tc2 in tool_calls[i:]:
-                        n2 = tc2["function"]["name"]
+                    for j in range(i, len(tool_calls)):
                         history.append({"role": "tool",
                                         "content": "[已被用户打断，未执行]",
-                                        "tool_name": n2})
+                                        "tool_name": tool_calls[j]["function"]["name"],
+                                        "tool_call_id": ids[j]})
                     emitter.notice("[⏹ 已打断，跳过未执行的工具]")
                     final_text = content
                     return final_text
@@ -254,7 +271,8 @@ def run_turn(client: OllamaClient, cfg: AgentConfig, ctx: ToolContext,
                 dt = time.time() - t0
                 emitter.tool_result(name, result.text, dt, images=result.images)
 
-                tool_msg: dict = {"role": "tool", "content": result.text, "tool_name": name}
+                tool_msg: dict = {"role": "tool", "content": result.text,
+                                  "tool_name": name, "tool_call_id": ids[i]}
                 if result.images:
                     tool_msg["images"] = result.images
                 history.append(tool_msg)

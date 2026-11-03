@@ -25,6 +25,7 @@ const state = {
   outline: [],  // {el, text}
   sessions: [], // 历史对话元信息
   sid: "",      // 当前对话 id
+  models: null, // 模型配置清单（内置 Ollama + 自定义 profiles）
   noSearchApi: false, // 后端没有 /api/sessions/search（旧进程），搜索直接给重启提示
 };
 
@@ -1038,22 +1039,278 @@ async function pollPending() {
 }
 
 // ---------------- 设置 ----------------
+
+// 模型配置清单（内置 Ollama + 自定义）。服务端返回的 Key 一律已打码，
+// 完整 Key 永远不下发到浏览器。
+async function loadModels() {
+  try {
+    const r = await api("/api/models");
+    state.models = r;
+    renderBuiltin(r.builtin || {});
+    renderCustom(r.profiles || [], r.active || "");
+    $("cfg-path").textContent = r.config_path || "~/.ollama-agent/config.json";
+    $("cfg-path").title = r.config_path || "";
+    if (r.recovered) toast(r.recovered, true);   // 配置文件坏了要让人知道
+  } catch (e) {
+    $("builtin-models").innerHTML =
+      `<p class="sb-empty">读取失败：${esc(e.message)}<br>后端是旧进程？重启服务再刷</p>`;
+  }
+}
+
+function renderBuiltin(b) {
+  const box = $("builtin-models");
+  const note = $("builtin-note");
+  const models = b.models || [];
+  if (b.error) {
+    // 本地没开 Ollama 是常态（用中转站的人不需要它），不该渲染成红色错误。
+    // 但要说清「为什么空」和「怎么恢复」。
+    note.textContent = "没连上本地 Ollama（不影响用自定义模型）。装了 Ollama 后点刷新。";
+    note.title = b.error;
+    box.innerHTML = '<p class="sb-empty">未发现本地模型</p>';
+    return;
+  }
+  note.textContent = models.length
+    ? `${models.length} 个已安装模型（来自 Ollama /api/tags）`
+    : "Ollama 在跑，但一个模型都没装：ollama pull <模型名>";
+  note.title = "";
+  box.innerHTML = models.map((m) => {
+    // Ollama 模型名本身就是模型配置；点一下即切过去（切到内置 = provider 变 ollama）
+    const on = state.config && state.config.provider === "ollama"
+      && state.config.model === m;
+    return `<button class="model-row${on ? " on" : ""}" data-ollama-model="${esc(m)}">` +
+      `<span class="m-name">${esc(m)}</span>` +
+      `<span class="m-tag">${on ? "使用中" : "Ollama"}</span></button>`;
+  }).join("");
+}
+
+function renderCustom(rows, activeId) {
+  const box = $("custom-models");
+  if (!rows.length) {
+    box.innerHTML = '<p class="sb-empty">还没有自定义模型。点「＋ 新建」填 /v1 地址和 Key。</p>';
+    return;
+  }
+  box.innerHTML = rows.map((p) => {
+    const on = p.id === activeId;
+    const where = p.provider === "openai" ? "OpenAI 兼容" : "Ollama";
+    const keyState = p.has_key ? `Key ${esc(p.api_key_masked || "")}` : "无 Key";
+    return `<div class="model-row${on ? " on" : ""}" data-profile="${esc(p.id)}">` +
+      `<button class="m-main" data-activate="${esc(p.id)}" title="点击切换到这个配置">` +
+      `<span class="m-name">${esc(p.name)}</span>` +
+      `<span class="m-sub">${esc(p.model || "未填模型")} · ${where}</span>` +
+      `<span class="m-sub">${esc(p.host || "未填地址")} · ${keyState}</span>` +
+      `</button>` +
+      `<span class="m-tag">${on ? "使用中" : ""}</span>` +
+      `<button class="icon-btn m-edit" data-edit="${esc(p.id)}" title="编辑">` +
+      `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 20h4L20 8l-4-4L4 16v4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>` +
+      `</button></div>`;
+  }).join("");
+}
+
+// ---------------- 新建 / 编辑表单 ----------------
+
+const mf = { open: false, id: "", hasKey: false };
+
+function openModelForm(p) {
+  mf.open = true;
+  mf.id = (p && p.id) || "";
+  mf.hasKey = !!(p && p.has_key);
+  $("model-form-title").textContent = p ? "编辑模型配置" : "新建自定义模型";
+  $("mf-name").value = (p && p.name) || "";
+  $("mf-provider").value = (p && p.provider) || "openai";
+  $("mf-host").value = (p && p.host) || "";
+  $("mf-key").value = "";
+  $("mf-key").placeholder = mf.hasKey
+    ? `已保存（${p.api_key_masked || "已打码"}），留空=不修改`
+    : "sk-…；Ollama 不需要，可留空";
+  $("mf-model").value = (p && p.model) || "";
+  $("mf-think").value = (p && p.think) || "off";
+  $("mf-ctx").value = (p && p.num_ctx) || "";
+  $("mf-temp").value = (p && p.temperature != null) ? p.temperature : 0.7;
+  $("mf-model-options").innerHTML = "";
+  $("mf-probe-result").textContent = "";
+  $("mf-probe-result").className = "probe-result";
+  $("btn-mf-delete").classList.toggle("hidden", !p);
+  $("model-form").classList.remove("hidden");
+  updateMfNote();
+  // 表单展开后必须让用户看见它。原来用 scrollIntoView({block:"nearest"})，
+  // 表单在视口下方时它只滚「最小必要距离」，实测保存按钮仍压在底部固定操作栏
+  // 下面就看不见 —— 点了「新建」却像没反应。这里显式滚到表单末尾，
+  // 把「保存/取消」一并带进视野（用 requestAnimationFrame 等布局算完再滚）。
+  requestAnimationFrame(() => {
+    const form = $("model-form");
+    const body = form.closest(".drawer-body");
+    if (!body) return;
+    const br = body.getBoundingClientRect();
+    const fr = form.getBoundingClientRect();
+    body.scrollTop += Math.round(fr.bottom - br.bottom + 16);
+  });
+  $("mf-name").focus({ preventScroll: true });   // 别让聚焦把刚滚好的位置又拉回顶部
+}
+
+function closeModelForm() {
+  mf.open = false;
+  mf.id = "";
+  $("model-form").classList.add("hidden");
+}
+
+// 协议说明跟着下拉框走：说清「这个协议认哪些字段」「地址该不该带 /v1」
+function updateMfNote() {
+  const p = $("mf-provider").value;
+  const host = ($("mf-host").value || "").trim();
+  const note = $("mf-note");
+  if (!note) return;
+  if (p === "openai") {
+    note.textContent = "走 /v1/chat/completions，需要 API Key；" +
+      (host && !/\/v1/i.test(host) ? "当前地址不含 /v1，多数中转站会 404。" : "地址要指到 /v1。") +
+      " num_ctx / think 不会下发（中转站不认，填了也不生效）。";
+  } else {
+    note.textContent = "走 /api/chat，不需要 Key。别人的 Ollama 要让对方设 " +
+      "OLLAMA_HOST=0.0.0.0 才能外部访问。";
+  }
+  // num_ctx 只对 Ollama 有意义：显式禁用并说明，免得人填了以为生效
+  setFieldCap("mf-ctx", p === "ollama", CTX_OFF_HINT);
+  setFieldCap("mf-think", p === "ollama", CTX_OFF_HINT);
+}
+
+async function probeModel() {
+  const btn = $("btn-mf-probe");
+  const out = $("mf-probe-result");
+  const payload = {
+    id: mf.id,
+    provider: $("mf-provider").value,
+    host: $("mf-host").value.trim(),
+    api_key: $("mf-key").value.trim(),      // 留空时后端回查已保存的那把
+    model: $("mf-model").value.trim(),
+  };
+  btn.disabled = true;
+  out.className = "probe-result";
+  out.textContent = "测试中…";
+  try {
+    const r = await api("/api/models/probe", payload);
+    const models = r.models || [];
+    $("mf-model-options").innerHTML = models.map((m) =>
+      `<option value="${esc(m)}"></option>`).join("");
+    if (r.ok) {
+      out.className = "probe-result ok";
+      out.textContent = r.model_missing ? "⚠ " + (r.note || "连通正常")
+                                        : (r.note || `连通正常，${models.length} 个模型`);
+      // 只填了地址没填模型名时，顺手把第一个模型填上（省一次手打，能改）
+      if (!payload.model && models.length === 1) $("mf-model").value = models[0];
+    } else {
+      out.className = "probe-result bad";
+      // 错误文案必须带下一步：只说「失败」等于让人自己猜
+      out.textContent = r.error + (r.hint ? " — " + r.hint : "");
+    }
+  } catch (e) {
+    out.className = "probe-result bad";
+    out.textContent = "测试请求本身失败：" + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveModel() {
+  const name = $("mf-name").value.trim();
+  const host = $("mf-host").value.trim();
+  const model = $("mf-model").value.trim();
+  const provider = $("mf-provider").value;
+  // 前置校验：错误要指路，不是只说「必填」
+  if (!host) return toast("填服务地址，例如 https://api.deepseek.com/v1", true);
+  if (provider === "openai" && !mf.hasKey && !$("mf-key").value.trim()) {
+    return toast("OpenAI 兼容协议需要 API Key：粘贴到 Key 框，或先点测试连通性", true);
+  }
+  if (!model) return toast("填模型名称；不确定就先点「测试连通性」，会列出该站的模型", true);
+  const payload = {
+    id: mf.id,
+    name: name || model,
+    provider,
+    host,
+    api_key: $("mf-key").value.trim(),
+    model,
+    think: $("mf-think").value,
+    num_ctx: Number($("mf-ctx").value || 0),
+    temperature: Number($("mf-temp").value || 0.7),
+  };
+  try {
+    await api("/api/models/save", payload);
+    toast("已保存并启用：" + payload.model);
+    closeModelForm();
+    await loadModels();
+    await loadConfig();
+  } catch (e) {
+    toast("保存失败：" + e.message, true);
+  }
+}
+
+async function deleteModel() {
+  if (!mf.id) return;
+  const ok = await askYesNo("删除模型配置",
+    "删掉后这个配置里的地址和 Key 就没了，需要重新填。确定删除？");
+  if (!ok) return;
+  try {
+    const r = await api("/api/models/delete", { id: mf.id });
+    if (r.error) return toast(r.error, true);
+    toast("已删除");
+    closeModelForm();
+    await loadModels();
+    await loadConfig();
+  } catch (e) {
+    toast("删除失败：" + e.message, true);
+  }
+}
+
+async function activateModel(id) {
+  try {
+    await api("/api/models/activate", { id });
+    await loadModels();
+    await loadConfig();
+    toast("已切换模型配置");
+  } catch (e) {
+    toast("切换失败：" + e.message, true);
+  }
+}
+
+async function activateOllama(name) {
+  // 点内置模型 = 把当前配置切到 Ollama 原生协议 + 这个模型名。
+  // 走 /api/config 而不是 profile：内置条目不落盘成 profile（模型列表是实时的）
+  const cur = (state.models && state.models.profiles || []).find(
+    (p) => p.id === (state.models.active || ""));
+  const host = (cur && cur.provider === "ollama" && cur.host)
+    || (state.config && state.config.provider === "ollama" && state.config.host)
+    || "http://localhost:11434";
+  try {
+    await api("/api/config", { provider: "ollama", host, model: name });
+    await loadConfig();
+    await loadModels();
+    toast("已切换到本地模型：" + name);
+  } catch (e) {
+    toast("切换失败：" + e.message, true);
+  }
+}
+
 async function loadConfig() {
   try {
     const c = await api("/api/config");
     state.config = c;
-    $("chip-model").textContent = c.model;
-    $("chip-think").textContent = "think " + c.think;
-    $("chip-ctx").textContent = "ctx " + (c.num_ctx ?? "默认");
+    $("chip-model").textContent = c.model || "未选模型";
+    // ctx / think 是 Ollama 专有参数：当前协议不下发它们时，
+    // 顶栏显示「不适用」而不是一个假的 65536（用户会以为调过上下文）
+    const caps = c.caps || {};
+    applyCap($("chip-think"), caps.think, "think", c.think);
+    applyCap($("chip-ctx"), caps.num_ctx, "ctx", c.num_ctx ?? "默认");
     $("chip-ws").textContent = c.workspace || ".";
     $("sb-meta").textContent = c.workspace || "";
     $("sb-meta").title = c.workspace || "";
-    const sel = $("set-model");
-    sel.innerHTML = (c.models || []).map((m) =>
-      `<option value="${esc(m)}" ${m === c.model ? "selected" : ""}>${esc(m)}</option>`
-    ).join("") || `<option value="${esc(c.model)}">${esc(c.model)}</option>`;
-    $("set-think").value = c.think;
-    $("set-ctx").value = c.num_ctx ?? 0;
+    $("set-think").value = c.think || "off";
+    // 不适用时清空，别让禁用的输入框里留个 0 —— 看着像「上下文=0」，
+    // 也容易被误当成当前生效值
+    $("set-ctx").value = caps.num_ctx ? (c.num_ctx ?? 0) : "";
+    // 不支持的参数直接禁用，并说明原因，免得人改了半天以为生效了
+    setFieldCap("set-think", caps.think, CTX_OFF_HINT);
+    setFieldCap("set-ctx", caps.num_ctx, CTX_OFF_HINT);
+    $("prefs-cap-note").textContent = caps.think
+      ? ""
+      : "当前是 OpenAI 兼容协议：think / num_ctx 属于 Ollama 原生协议，不会下发。要调它们请切换到 Ollama 模型。";
     $("set-temp").value = c.temperature;
     $("set-steps").value = c.max_steps;
     $("set-confirm").value = c.confirm ? "on" : "off";
@@ -1072,27 +1329,73 @@ function syncFeatureGate(features) {
   searchInput.title = state.noSearchApi
     ? "后端还没有搜索接口：先停止服务（Ctrl+C），再重新启动即可"
     : "";
+  // 模型管理接口是这一版新增的：后端没这接口时，「模型管理」标签页会一片空白，
+  // 得说清是进程旧了，而不是让人以为功能坏了
+  const noModels = !features.includes("models.profiles");
+  $("tab-models").classList.toggle("hidden", false);
+  if (noModels) {
+    $("builtin-models").innerHTML =
+      '<p class="sb-empty">后端是旧进程，没有模型管理接口<br>重启服务（Ctrl+C 后重跑启动命令）即可</p>';
+    $("custom-models").innerHTML = "";
+  }
 }
 
+// 偏好：只提交偏好段。模型参数在「模型管理」里逐配置改，
+// 两边都提交会把用户在表单里改了一半的值冲掉。
 async function applyConfig() {
   const patch = {
-    model: $("set-model").value,
-    think: $("set-think").value,
-    num_ctx: Number($("set-ctx").value || 0),
-    temperature: Number($("set-temp").value || 0.7),
     max_steps: Number($("set-steps").value || 12),
     confirm: $("set-confirm").value === "on",
     workspace: $("set-ws").value.trim(),
   };
+  const caps = (state.config && state.config.caps) || {};
+  if (caps.think) patch.think = $("set-think").value;
+  if (caps.num_ctx) patch.num_ctx = Number($("set-ctx").value || 0);
+  patch.temperature = Number($("set-temp").value || 0.7);
   try {
-    const c = await api("/api/config", patch);
-    state.config = c;
-    toast("设置已应用");
-    loadConfig();
+    await api("/api/config", patch);
+    toast("偏好已应用");
+    await loadConfig();
     loadWorkspaceFiles();
   } catch (e) {
     toast("设置失败: " + e.message, true);
   }
+}
+
+// 能力标记：不适用时 chip 保留参数名并标注，而不是留个假数值。
+// 名字必须留着——两个都写「不适用」的话，看不出哪个是 think 哪个是 ctx。
+function applyCap(el, supported, label, value) {
+  if (!el) return;
+  el.textContent = supported ? `${label} ${value}` : `${label} 不适用`;
+  el.classList.toggle("cap-off", !supported);
+  el.title = supported ? "" : "当前后端协议不支持该参数（不会下发，改了也没用）";
+}
+
+function setFieldCap(id, supported, reason) {
+  const el = $(id);
+  if (!el) return;
+  el.disabled = !supported;
+  el.title = supported ? "" : reason;
+  // 占位符跟着走：禁用的框里写「0 = 服务端默认」会让人以为还能调
+  if (el.dataset.ph0 === undefined) el.dataset.ph0 = el.placeholder || "";
+  el.placeholder = supported ? el.dataset.ph0 : "不适用";
+  const field = el.closest(".field");
+  if (field) field.classList.toggle("field-off", !supported);
+}
+
+// 协议不支持 num_ctx / think 时给的理由：要包含「为什么」和「怎么才能改」。
+// 只写「不支持」的话，用户只能靠猜。
+const CTX_OFF_HINT =
+  "当前是 OpenAI 兼容协议，这两个参数属于 Ollama 原生协议，不会下发。" +
+  "要调它们请把「协议类型」切回 Ollama。";
+
+// 标签页切换：模型管理 / 偏好
+function switchTab(name) {
+  document.querySelectorAll(".set-tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === name));
+  $("tab-models").classList.toggle("hidden", name !== "models");
+  $("tab-prefs").classList.toggle("hidden", name !== "prefs");
+  $("btn-apply").classList.toggle("hidden", name !== "prefs");
 }
 
 // ---------------- / 技能 · @ 文件 面板 ----------------
@@ -1228,6 +1531,27 @@ document.addEventListener("click", (e) => {
   const t = e.target;
   if (!(t instanceof Element)) return;
 
+  // 模型管理：编辑按钮优先于「切换」—— 编辑按钮在行内，
+  // 先判它，否则点铅笔也会顺带切过去（渲染后点击穿透到父级行）
+  const editBtn = t.closest("[data-edit]");
+  if (editBtn) {
+    const pid = editBtn.dataset.edit;
+    const row = ((state.models && state.models.profiles) || [])
+      .find((p) => p.id === pid);
+    if (row) openModelForm(row);
+    return;
+  }
+  const actBtn = t.closest("[data-activate]");
+  if (actBtn) {
+    activateModel(actBtn.dataset.activate);
+    return;
+  }
+  const ollamaBtn = t.closest("[data-ollama-model]");
+  if (ollamaBtn) {
+    activateOllama(ollamaBtn.dataset.ollamaModel);
+    return;
+  }
+
   const act = t.closest("[data-act]")?.dataset.act;
 
   // 历史对话：删除按钮优先于打开
@@ -1351,10 +1675,25 @@ $("file-input").onchange = async (e) => {
 $("btn-settings").onclick = () => {
   $("settings").classList.remove("hidden");
   loadConfig();
+  loadModels();
 };
-$("btn-close-settings").onclick = () => $("settings").classList.add("hidden");
+$("btn-close-settings").onclick = () => {
+  $("settings").classList.add("hidden");
+  closeModelForm();      // 关抽屉时收起表单，下次打开不残留上次编辑的内容
+};
 $("btn-apply").onclick = applyConfig;
-$("btn-refresh-models").onclick = loadConfig;
+$("btn-refresh-models").onclick = () => { loadConfig(); loadModels(); };
+$("btn-refresh-builtin").onclick = loadModels;
+$("btn-new-model").onclick = () => openModelForm(null);
+$("btn-mf-probe").onclick = probeModel;
+$("btn-mf-save").onclick = saveModel;
+$("btn-mf-cancel").onclick = closeModelForm;
+$("btn-mf-delete").onclick = deleteModel;
+$("mf-provider").onchange = updateMfNote;
+$("mf-host").oninput = updateMfNote;
+document.querySelectorAll(".set-tab").forEach((b) => {
+  b.onclick = () => switchTab(b.dataset.tab);
+});
 $("btn-refresh-files").onclick = loadWorkspaceFiles;
 $("btn-refresh-sessions").onclick = () => loadSessions();
 

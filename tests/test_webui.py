@@ -335,7 +335,7 @@ def main():
             json.dumps({"message": {"content": "呀"}, "done": True,
                         "eval_count": 3}).encode(),
         ])
-        cli._post_chat = lambda payload: fake
+        cli._post_stream = lambda messages, tools: fake
         ev2 = _th.Event()
         got_c = {}
         def on_text(t):
