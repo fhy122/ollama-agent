@@ -207,11 +207,29 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
     def _stopped() -> bool:
         return cancel is not None and cancel.is_set()
 
+    # ---- 每步时间窗（开始/结束真实时刻，毫秒精度）----
+    # 设计参考 DeepSeek Harness：数据层记录真实时刻，视图只做投影。
+    # 步窗口 = 「第 N 步」分隔线到下一条分隔线（含本步全部工具执行）。
+    # 在下一步开始时闭合上一步；回合收尾由 finally 兜住所有出口
+    # （打断 / 报错 / 手动停止 / 触顶 / Ctrl+C），保证最后一步也有时刻。
+    _cur: dict = {}
+
+    def _close_step() -> None:
+        if not _cur:
+            return
+        fn = getattr(emitter, "step_time", None)   # 老发射器没有此方法，跳过
+        if fn:
+            resp = _cur.get("resp") or {}
+            fn(_cur["step"], _cur["t0"], time.time(), ttft=resp.get("ttft"))
+        _cur.clear()
+
     try:
         for step in range(1, cfg.max_steps + 1):
             if _stopped():
                 emitter.notice("[⏹ 已打断本轮回答]")
                 break
+            _close_step()
+            _cur.update(step=step, t0=time.time())
             emitter.step(step)
             # 点名用外脑：先给一步时间采集，之后由代码直接委派给外脑
             # （小模型自己不会停手，详见 _delegate_to_expert 里的实测说明）
@@ -230,6 +248,7 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                 # 否则心跳会被这些看不见的块一路抑制掉。
                 think_hidden=getattr(emitter, "think_hidden", True),
             )
+            _cur["resp"] = resp      # 步时间窗闭合时取 ttft 用
             emitter.newline()
 
             # 每一步单独报一次耗时。以前只在回合末尾发一次，用的是**最后一次**
@@ -317,6 +336,8 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
         emitter.newline()
         emitter.notice("[⏹ 已打断本轮回答]")
         return resp.get("content") or ""
+    finally:
+        _close_step()      # 最后一步的结束时刻：任何出口都要闭合时间窗
 
     # 这里不再补报统计：每一轮 chat 之后都已经按步发过了（见上面循环里的
     # emitter.stats(_stats, step=step)）。留着这里只会把最后一步的耗时打印两遍。

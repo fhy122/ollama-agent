@@ -82,6 +82,18 @@ class RecordingEmitter:
         self._push({"type": "step", "n": n})
         self._inner.step(n)
 
+    def step_time(self, step: int, t_start: float, t_end: float,
+                  ttft: float | None = None) -> None:
+        obj: dict = {"type": "step_time", "step": step,
+                     "t_start": int(t_start * 1000), "t_end": int(t_end * 1000),
+                     "duration": round(t_end - t_start, 2)}
+        if ttft is not None:
+            obj["ttft"] = round(ttft, 2)
+        self._push(obj)
+        inner = getattr(self._inner, "step_time", None)
+        if inner:
+            inner(step, t_start, t_end, ttft=ttft)
+
     def text(self, t: str) -> None:
         self._push({"type": "text", "text": t})
         self._inner.text(t)

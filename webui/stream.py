@@ -57,6 +57,20 @@ class StreamEmitter:
     def step(self, n: int) -> None:
         self._send({"type": "step", "n": n})
 
+    def step_time(self, step: int, t_start: float, t_end: float,
+                  ttft: float | None = None) -> None:
+        """每步时间窗：真实开始/结束时刻（epoch 毫秒）+ 耗时 + TTFT。
+
+        设计参考 DeepSeek Harness：数据层记录真实时刻，前端只做投影；
+        历史回放走同一份事件，不需要二次补算。
+        """
+        obj = {"type": "step_time", "step": step,
+               "t_start": int(t_start * 1000), "t_end": int(t_end * 1000),
+               "duration": round(t_end - t_start, 2)}
+        if ttft is not None:
+            obj["ttft"] = round(ttft, 2)
+        self._send(obj)
+
     def text(self, t: str) -> None:
         self._send({"type": "text", "text": t})
 

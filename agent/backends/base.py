@@ -450,15 +450,18 @@ class ChatClient:
         content_parts: list[str] = []
         tool_calls: list[dict] = []
         stats: dict = {}
+        t_first: float | None = None    # 首个可见 token 的到达时刻（TTFT 用）
         cancelled = False
         done_seen = False
         stream_error: str | None = None
         parser = self.new_parser()
 
         def _absorb(events: list[dict]) -> None:
-            nonlocal done_seen, stats, stream_error
+            nonlocal done_seen, stats, stream_error, t_first
             for ev in events:
                 kind = ev.get("type")
+                if t_first is None and kind in ("think", "text", "tool"):
+                    t_first = _time.time()
                 if kind == "think":
                     thinking_parts.append(ev["text"])
                     progress[0] += len(ev["text"])
@@ -563,6 +566,8 @@ class ChatClient:
             "stats": stats,
             "cancelled": cancelled,
             "error": stream_error,
+            # TTFT（到首个可见 token）：区分「等模型」和「模型在吐字」两段
+            "ttft": (t_first - t_start) if t_first is not None else None,
         }
 
     # ---------- 模型 ----------

@@ -882,6 +882,13 @@ async function sendMessage() {
 }
 
 // 统一的流事件处理：实时接收与历史回放共用同一套渲染
+// 步骤时间戳：epoch 毫秒 → 「19:05:12.345」（本地时区，毫秒三位）
+function fmtClock(ms) {
+  const d = new Date(ms);
+  const p = (n, l = 2) => String(n).padStart(l, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
 function applyEvent(turn, ev) {
   // 除了心跳本身，任何真实事件都说明「生成阶段的等待」结束了，先收掉进度条，
   // 否则它会一直挂在回合末尾，看起来像还在等。
@@ -890,6 +897,20 @@ function applyEvent(turn, ev) {
     case "step":
       turn.addStep(ev.n);
       break;
+    case "step_time": {
+      // 每步时间窗（参考 DeepSeek Harness：真实开始/结束时刻 + 耗时 + TTFT）。
+      // 出现在该步工具卡片之后、下一步分隔线之前——正是这个步的实际跨度。
+      const m = document.createElement("div");
+      m.className = "meta";
+      const tag = ev.step ? `第 ${ev.step} 步 · ` : "";
+      let line = `${tag}⏱ ${fmtClock(ev.t_start)} → ${fmtClock(ev.t_end)} · ${ev.duration}s`;
+      if (ev.ttft != null) line += ` · TTFT ${ev.ttft}s`;
+      m.textContent = line;
+      m.title = `开始 ${fmtClock(ev.t_start)}（epoch 毫秒 ${ev.t_start}）\n` +
+                `结束 ${fmtClock(ev.t_end)}（epoch 毫秒 ${ev.t_end}）`;
+      turn.root.appendChild(m);
+      break;
+    }
     case "thinking":
       turn.updateWaiting(ev.elapsed || 0, ev.chars || 0);
       break;
