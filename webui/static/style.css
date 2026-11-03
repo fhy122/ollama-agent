@@ -70,6 +70,9 @@
     --user-bubble: #262b34;
     --user-text: #e9ecf1;
 
+    /* 深底上 #12a150 偏暗，小字号（11px 胶囊）对比不够，提亮一档 */
+    --ok: #2ec46e;
+
     --code-bg: #1d2330;
     --code-border: #2c3646;
     --code-text: #9ecbff;
@@ -1015,7 +1018,16 @@ details.think .body { font-family: inherit; font-size: 13px; }
   transition: background var(--dur), border-color var(--dur);
 }
 .model-row:hover { background: var(--bg); border-color: var(--border); }
-.model-row.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+/* 选中态参考 WorkBuddy 切换器：绿色对勾 + 绿胶囊 + 整行高亮，
+   蓝色浅底太接近 hover 效果，一眼分不出哪个在用 */
+.model-row.on {
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 38%, transparent);
+}
+.model-row.on:hover {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 48%, transparent);
+}
 .model-row .m-main {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column; gap: 2px;
@@ -1026,7 +1038,7 @@ details.think .body { font-family: inherit; font-size: 13px; }
   font-size: 13.5px; color: var(--text); font-weight: 550;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.model-row.on .m-name { color: var(--accent-ink); }
+.model-row.on .m-name { color: var(--text); font-weight: 620; }
 /* 副行只留两行：域名 + Key 状态，再多就把抽屉撑爆 */
 .model-row .m-sub {
   font-size: 11.5px; color: var(--muted);
@@ -1034,9 +1046,15 @@ details.think .body { font-family: inherit; font-size: 13px; }
 }
 .model-row .m-tag {
   flex: 0 0 auto; font-size: 11px; color: var(--muted);
+  display: inline-flex; align-items: center; gap: 3px;
   padding: 2px 7px; border-radius: 99px; background: var(--bg);
 }
-.model-row.on .m-tag { color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.model-row .m-tag svg { flex: 0 0 auto; }
+/* 使用中 = 绿胶囊，和对勾一个色系，扫一眼就知道哪行在用 */
+.model-row.on .m-tag {
+  color: var(--ok); font-weight: 620;
+  background: color-mix(in srgb, var(--ok) 13%, transparent);
+}
 .model-row .m-edit { flex: 0 0 auto; width: 26px; height: 26px; opacity: .55; }
 .model-row:hover .m-edit { opacity: 1; }
 

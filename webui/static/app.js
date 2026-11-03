@@ -1072,6 +1072,12 @@ async function pollPending() {
 
 // ---------------- 设置 ----------------
 
+// 「使用中」胶囊前的对勾：选中信号的主力，绿胶囊 + 对勾一个色系
+const CHECK_SVG =
+  '<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">' +
+  '<path d="M4.5 12.5l5 5L19.5 7" fill="none" stroke="currentColor" ' +
+  'stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 // 模型配置清单（内置 Ollama + 自定义）。服务端返回的 Key 一律已打码，
 // 完整 Key 永远不下发到浏览器。
 async function loadModels() {
@@ -1111,7 +1117,7 @@ function renderBuiltin(b) {
       && state.config.model === m;
     return `<button class="model-row${on ? " on" : ""}" data-ollama-model="${esc(m)}">` +
       `<span class="m-name">${esc(m)}</span>` +
-      `<span class="m-tag">${on ? "使用中" : "Ollama"}</span></button>`;
+      `<span class="m-tag">${on ? CHECK_SVG + "使用中" : "Ollama"}</span></button>`;
   }).join("");
 }
 
@@ -1131,7 +1137,7 @@ function renderCustom(rows, activeId) {
       `<span class="m-sub">${esc(p.model || "未填模型")} · ${where}</span>` +
       `<span class="m-sub">${esc(p.host || "未填地址")} · ${keyState}</span>` +
       `</button>` +
-      `<span class="m-tag">${on ? "使用中" : ""}</span>` +
+      `<span class="m-tag">${on ? CHECK_SVG + "使用中" : ""}</span>` +
       `<button class="icon-btn m-edit" data-edit="${esc(p.id)}" title="编辑">` +
       `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 20h4L20 8l-4-4L4 16v4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>` +
       `</button></div>`;
