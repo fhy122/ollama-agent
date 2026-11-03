@@ -13,6 +13,9 @@ from agent import longdoc
 from agent.config import SYSTEM_PROMPT, AgentConfig
 from agent.events import ConsoleEmitter
 from agent.registry import ToolContext, ToolResult
+from agent.repeat_guard import RepeatGuard
+from agent.retry import (RETRYABLE, backoff_delay, classify_error,
+                         interruptible_sleep)
 
 import tools
 
@@ -191,6 +194,10 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
 
     strip_old_images(history)
 
+    # 防呆循环 guard：新用户消息清零连击（跨指令的重复不是循环）
+    guard = RepeatGuard()
+    guard.reset()
+
     user_msg = {"role": "user",
                 "content": expert_hint(user_text) + longdoc.attachment_hint(
                     user_text, ctx.workspace, cfg.num_ctx)}
@@ -203,6 +210,7 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
     expert_done = False                         # 本回合是否已经问过外脑
     final_text = ""
     resp: dict = {}
+    pending_reminders: list[dict] = []          # 命中重复阈值待注入的提醒
 
     def _stopped() -> bool:
         return cancel is not None and cancel.is_set()
@@ -237,18 +245,78 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                 expert_done = True
                 _delegate_to_expert(client, cfg, ctx, history, emitter, user_text)
                 continue
-            resp = client.chat(
-                history,
-                tools=tools_spec,
-                on_text=emitter.text,
-                on_think=emitter.think,
-                cancel=cancel,
-                on_wait=getattr(emitter, "thinking", None),
-                # 前端不显示思考内容时，think 块对用户等于不存在，不能算「有进展」，
-                # 否则心跳会被这些看不见的块一路抑制掉。
-                think_hidden=getattr(emitter, "think_hidden", True),
-            )
-            _cur["resp"] = resp      # 步时间窗闭合时取 ttft 用
+            # 上一工具步命中的重复提醒在这里注入（tool 结果之后、请求之前）。
+            # 为什么不紧跟 tool 消息 append：打断收尾的 pad_unanswered_tool_calls
+            # 依赖「末尾连续 tool 消息」的结构，中间插 user 消息会破坏配对。
+            if pending_reminders:
+                history.extend(pending_reminders)
+                pending_reminders.clear()
+            # ---- 调用模型（断流自动重试，设计参考 DSH dsh-llm-retry）----
+            # 空输出失败（没吐一个字就断）→ 历史未动，退避后干净重跑；
+            # 半截输出失败 → 已生成部分先入历史，注入「从中断处继续」后自动续写
+            #（用户已看到的字绝不回滚，也绝不重复生成）；
+            # FATAL（Key 错/参数错）与次数用尽走原收尾，不打无意义的转。
+            retry_no = 0
+            while True:
+                try:
+                    resp = client.chat(
+                        history,
+                        tools=tools_spec,
+                        on_text=emitter.text,
+                        on_think=emitter.think,
+                        cancel=cancel,
+                        on_wait=getattr(emitter, "thinking", None),
+                        # 前端不显示思考内容时，think 块对用户等于不存在，不能算「有进展」，
+                        # 否则心跳会被这些看不见的块一路抑制掉。
+                        think_hidden=getattr(emitter, "think_hidden", True),
+                    )
+                except RuntimeError as e:
+                    # _post_stream 阶段失败（连不上 / 等第一个字节超时 / API 状态错）。
+                    if _stopped():
+                        # 打断与断连的竞态：按打断收尾，别把主动停止报成错误
+                        resp = {"thinking": "", "content": "", "tool_calls": [],
+                                "stats": {}, "cancelled": True, "error": None,
+                                "ttft": None}
+                        break
+                    kind = classify_error(str(e))
+                    if kind in RETRYABLE and retry_no < cfg.stream_retries:
+                        retry_no += 1
+                        delay = backoff_delay(retry_no)
+                        emitter.notice(f"[⚠ {str(e)[:80]}，{delay:.1f} 秒后自动重试"
+                                       f"（{retry_no}/{cfg.stream_retries}）]")
+                        if not interruptible_sleep(delay, cancel):
+                            # 退避期间用户打断：立即收尾，不留隐形等待
+                            resp = {"thinking": "", "content": "", "tool_calls": [],
+                                    "stats": {}, "cancelled": True, "error": None,
+                                    "ttft": None}
+                            break
+                        continue
+                    raise     # Key 错 / 参数错：重试无用，照原样报错
+                _cur["resp"] = resp      # 步时间窗闭合时取 ttft 用
+                err = resp.get("error")
+                if (err and not resp.get("cancelled")
+                        and retry_no < cfg.stream_retries
+                        and classify_error(err) in RETRYABLE):
+                    retry_no += 1
+                    partial = resp.get("content") or ""
+                    if partial:
+                        # 半截：保住用户已看到的字，再注入续写指令（自动恢复对话）
+                        note = f"[回答中断：{err}]"
+                        history.append({"role": "assistant",
+                                        "content": partial + "\n" + note})
+                        history.append({"role": "user", "content":
+                                        "[系统] 上一次回答在生成途中断开了。上面那条 "
+                                        "assistant 消息就是已生成的部分。"
+                                        "请从中断处自然继续，不要重复已输出内容，"
+                                        "也不要提中断这件事。"})
+                        emitter.notice(f"[⚠ 回答中断，已保留已生成部分，自动续写"
+                                       f"（{retry_no}/{cfg.stream_retries}）]")
+                    else:
+                        emitter.notice(f"[⚠ {err[:80]}，自动重试"
+                                       f"（{retry_no}/{cfg.stream_retries}）]")
+                    continue
+                break     # 成功 / 打断 / 不可重试 / 次数用尽 → 交给下方原判定收尾
+
             emitter.newline()
 
             # 每一步单独报一次耗时。以前只在回合末尾发一次，用的是**最后一次**
@@ -327,6 +395,14 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                 if result.images:
                     tool_msg["images"] = result.images
                 history.append(tool_msg)
+
+                # 防呆循环观察：执行后计数（失败的调用同样计数），命中阈值
+                # 生成提醒，下一次模型请求前注入。只提醒不否决。
+                reminder = guard.observe(name, args)
+                if reminder:
+                    emitter.notice(f"[⚠ {name} 连续第 "
+                                   f"{guard.count} 次相同调用，已提醒模型换方法]")
+                    pending_reminders.append({"role": "user", "content": reminder})
         else:
             final_text = "[已达到最大工具步数，强制结束]"
             emitter.notice(final_text)

@@ -46,6 +46,17 @@ _HANDSHAKE_TIMEOUT = 15.0
 # 思考不发字），所以读流仍用长值。环境变量可调，本地大模型冷启动慢就调大。
 _TTFT_TIMEOUT = float(os.environ.get("OLLAMA_AGENT_TTFT", "180"))
 
+# 读流空闲预算（秒）：流开始后，两块数据之间的最大间隔——不是整轮时长。
+# 流式协议下 think/正文/工具参数都是分块持续推送，正常生成不会静默几分钟；
+# 静默 = 对端半死（中转站把上游挂起了）。线上实证（2026-11-03 py-spy 抓栈）：
+# 思考文本流完后线程阻塞在 readline，界面「正在生成」字符数停着不动，
+# 而旧实现这里用的是 cfg.timeout（1800s）——半死连接要干等半小时才报错。
+# 超时抛 TimeoutError → stream_error → run_turn 的自动重试接力（换一次连接
+# 常常就活了）。120s 的依据：正常块间隔是亚秒级，9B 模型憋长工具参数也不到
+# 半分钟；留一倍余量后 2 分钟静默几乎只可能是死连接——再等只是干耗。
+# 环境变量可调：确实遇到块间隔极大的后端就调大。
+_IDLE_TIMEOUT = float(os.environ.get("OLLAMA_AGENT_IDLE", "120"))
+
 
 def _short_handshake_cls(base: type) -> type:
     """给 http.client 连接类挂「TCP + TLS 握手短预算」：connect 期间把超时
@@ -66,7 +77,8 @@ def _short_handshake_cls(base: type) -> type:
             self.timeout = real
         if self.sock is not None:
             try:
-                self.sock.settimeout(real)   # 握手完，读流恢复长超时
+                # 握手完，读流恢复空闲预算（两块之间的最大间隔，见 _IDLE_TIMEOUT）
+                self.sock.settimeout(min(_IDLE_TIMEOUT, real))
             except Exception:
                 pass                          # 替身 sock 未必实现 settimeout
 
@@ -291,7 +303,11 @@ class ChatClient:
                     resp = conn.getresponse()
                 finally:
                     try:
-                        sock.settimeout(self.cfg.timeout)   # 读流恢复长超时
+                        # 读流空闲预算：两块之间的最大间隔（不是整轮时长）。
+                        # 以前用 cfg.timeout（1800s），对端半死时要干等半小时
+                        # 才报错（py-spy 实证：阻塞在 readline，界面字符数
+                        # 停着不动）。超时 → stream_error → 自动重试接力。
+                        sock.settimeout(min(_IDLE_TIMEOUT, self.cfg.timeout))
                     except Exception:
                         pass
             else:

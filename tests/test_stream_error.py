@@ -178,7 +178,7 @@ class _Emitter:
 
 
 def test_run_turn_keeps_partial() -> None:
-    """断流时 run_turn 要把半截内容写进历史，并明确告知用户。"""
+    """半截断流：已生成内容留在历史 + 自动续写重试，用尽后仍按断流收尾。"""
     cfg = AgentConfig(use_color=False, warm=False)
     ctx = ToolContext(use_color=False, workspace=Path("."))
     em = _Emitter()
@@ -190,14 +190,19 @@ def test_run_turn_keeps_partial() -> None:
     out = run_turn(client, cfg, ctx, history, "怎么做自动化测试", emitter=em)
 
     assert out == "自动化测试策略前半段", out
-    assert client.calls == 1, "断流后不应继续跑下一步"
+    # 每次半截断流都触发自动续写：首次 + 重试 3 次 = 4 次调用（stream_retries=3）
+    assert client.calls == 1 + cfg.stream_retries, client.calls
     last = history[-1]
     assert last["role"] == "assistant", last
     assert "自动化测试策略前半段" in last["content"], "已生成内容必须留在历史里"
     assert "回答中断" in last["content"], last["content"]
+    # 自动恢复：重试路径里注入了「从中断处继续」的续写指令
+    resumes = [m for m in history if m.get("role") == "user"
+               and "从中断处" in str(m.get("content"))]
+    assert len(resumes) == cfg.stream_retries, "每次续写重试都应注入恢复指令"
     notes = [v for k, v in em.events if k == "notice"]
-    assert any("回答中断" in str(n) for n in notes), notes
-    assert any("继续" in str(n) for n in notes), "应告诉用户可以直接说继续"
+    assert any("自动续写" in str(n) for n in notes), notes
+    assert any("继续" in str(n) for n in notes), "次数用尽后仍应告诉用户可以说继续"
     print("PASS: run_turn 断流兜底（内容入历史 + 明确提示 + 不继续跑）")
 
 
