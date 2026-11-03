@@ -7,6 +7,10 @@
 技能目录（按优先级，同名先者胜）：
   1. {workspace}/.workbuddy/skills/<name>/SKILL.md   工作空间级
   2. ~/.workbuddy/skills/<name>/SKILL.md             用户级
+  3. {repo}/skills/<name>/SKILL.md                   内置（随仓库走，优先级最低）
+
+内置目录放最后，是为了让用户在任何工作空间都能用上随仓库发布的技能
+（如 coding-standards），同时保留「放一份同名技能到用户目录即可覆盖」的退路。
 """
 from __future__ import annotations
 
@@ -57,6 +61,9 @@ def _skill_dirs(workspace: Path | None) -> list[Path]:
     home = Path.home() / ".workbuddy"
     dirs.append(home / "skills")
     dirs.extend(sorted(home.glob("user-*-personal/skills")))
+    # 内置技能：仓库根 skills/（本文件在 <repo>/tools/ 下，故取 parent.parent）。
+    # 放最后 → 同名时用户自己的技能先命中，不会被仓库锁死。
+    dirs.append(Path(__file__).resolve().parent.parent / "skills")
     return [d for d in dirs if d.is_dir()]
 
 

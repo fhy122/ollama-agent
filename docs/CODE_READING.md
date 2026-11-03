@@ -83,7 +83,8 @@ ollama-agent/
 │  ├─ web_search.py           Bing 主 + 百度兜底，多线程抓取（confirm）
 │  ├─ browse_url.py           Playwright 单例浏览器读网页（confirm）
 │  ├─ web_chat.py             把问题打到文心/豆包网页版取回答（confirm）
-│  ├─ skill.py                技能发现 / 索引 / 按名加载正文
+│  ├─ skill.py                技能发现 / 索引 / 按名加载正文（含仓库内置 skills/）
+│  ├─ verify.py               编码规范机械判据（语法/断链/代码块/测试）
 │  └─ render_sheet.py         xlsx → HTML → 截图（给模型"看"表格）
 │
 ├─ webui/                     ★ 第二前端（同一内核的 HTTP 外壳）
@@ -98,7 +99,7 @@ ollama-agent/
 │     └─ style.css            样式
 │
 ├─ tests/                     ★ 回归（脚本式 main() 为主，后端/配置类用 pytest）
-│  ├─ test_tools.py           15 个工具 + 路径 + xlsx/docx + 面板按键（主回归）
+│  ├─ test_tools.py           18 个工具 + 路径 + xlsx/docx + 面板按键（主回归）
 │  ├─ test_cli_palette_console.py  真 Windows 控制台里的面板重绘
 │  ├─ test_webui.py           API + ConfirmGate + NDJSON
 │  ├─ test_client_errors.py   400 分支、图片剥离、错误文本压平
@@ -179,7 +180,7 @@ ollama-agent/
 | `agent/clipboard.py` | 338 | `grab_any`、`grab_files`、`grab_and_cache`、`dib_to_rgba` | 剪贴板取图/取文件，落 `.clip_cache/` | cli `do_paste`、webui、`tools/clipboard_image` |
 | `agent/hotkeys.py` | 110 | `HotkeyListener.start/stop`、`is_supported` | 全局 Alt+V；注册失败返回 False（调用方降级为 `/paste`） | cli、webui.server |
 
-**工具层（15 个，签名统一 `fn(ctx, **参数) -> ToolResult`）**
+**工具层（18 个，签名统一 `fn(ctx, **参数) -> ToolResult`）**
 
 | 工具 | 文件 | 入参 | 行为要点 |
 |---|---|---|---|
@@ -198,6 +199,7 @@ ollama-agent/
 | `web_chat` | `tools/web_chat.py` | `question, site="both"` | 复用浏览器单例问文心/豆包，轮询稳定后抽取 |
 | `skill` | `tools/skill.py` | `name="", max_chars=20000` | 空 name 列技能；有 name 注入正文 |
 | `render_sheet` | `tools/render_sheet.py` | `path, sheet="", max_rows=...` | 表格 → HTML → 截图，返回图片给视觉模型 |
+| `verify` | `tools/verify.py` | `checks, path=None, timeout=120` | 编码规范机械判据：syntax/links/blocks/tests，返回真实退出结果 |
 
 **Web UI**
 
@@ -229,7 +231,7 @@ registry      → （无内部依赖，最底层）
 ```
 
 两条容易忽视的边：
-- `loop.py` 顶部 `import tools` —— 这一句是**注册副作用**（触发 15 个 `@tool`），不是普通依赖。
+- `loop.py` 顶部 `import tools` —— 这一句是**注册副作用**（触发 18 个 `@tool`），不是普通依赖。
 - `tools/web_search.py` 和 `web_chat.py` 借用 `tools/browse_url.py` 的 Playwright 单例（`_pw_page` / `pw_new_page`），所以浏览器全进程只有一个。
 
 ### 2.6 运行时序（一条消息依次经过谁）
@@ -385,7 +387,7 @@ WebUI 侧相对 CLI 只多两件事：`AgentSession` 用锁把回合串行化；
 |---|---|---|
 | **加工具** | 新建 `tools/your_tool.py`，`@tool(...)` | 参数 schema 里每个参数都要有 `description`（小模型靠它选工具）；危险操作加 `confirm=True`；路径一律 `ctx.resolve()` |
 | **加前端** | 实现与 `ConsoleEmitter` 同名的方法（step/text/think/newline/tool_call/tool_result/stats/notice，可选 confirm） | 已有 GUI 想法时，`run_turn(emitter=你的)` 即可 |
-| **加技能** | `{workspace}/.workbuddy/skills/<name>/SKILL.md` 或 `~/.workbuddy/skills/` | frontmatter 的 `name/description` 进索引常驻，正文由 `skill` 工具按需加载 |
+| **加技能** | `{workspace}/.workbuddy/skills/<name>/SKILL.md`、`~/.workbuddy/skills/`，或仓库内置 `skills/<name>/SKILL.md` | frontmatter 的 `name/description` 进索引常驻，正文由 `skill` 工具按需加载；三个目录同名时**先者胜**（工作空间 > 用户 > 仓库内置），内置技能因此可被用户覆盖 |
 | **换模型 / 调 ctx / 改 think** | `AgentConfig` + `client` 对应字段 | 两边必须同步：`cli.py` 的 `/model` `/ctx` `/think` 与 `session.update_config()` 都在双写 |
 | **加 WebUI 接口** | `webui/server.py` 的 `do_GET/do_POST` 路由分支 | 纯标准库手写路由，没有框架；静态资源在 `webui/static/` |
 | **改系统提示词** | `agent/config.py` 的 `SYSTEM_PROMPT` | 现有第 8 条是 xlsx 列表格规约，改前先跑 `tests/test_tools.py` 的 xlsx 用例 |

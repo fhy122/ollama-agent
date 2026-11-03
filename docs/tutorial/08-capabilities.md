@@ -304,13 +304,17 @@ return ToolResult("已渲染为图片，见附图", images=[b64(png)])
 
 ## 九、技能（skill）：不改代码就扩展行为
 
-技能 = 一个 `SKILL.md`，带 YAML frontmatter，放在三个位置之一：
+技能 = 一个 `SKILL.md`，带 YAML frontmatter，放在四个位置之一（同名先者胜，自上而下）：
 
 ```
 {workspace}/.workbuddy/skills/<name>/SKILL.md     # 项目级
 ~/.workbuddy/skills/<name>/SKILL.md               # 用户级
 ~/.workbuddy/user-*/skills/<name>/SKILL.md        # 账号级
+<仓库>/skills/<name>/SKILL.md                     # 内置（随仓库走，优先级最低）
 ```
+
+内置目录是有意放在最后的：仓库自带的技能（如 `coding-standards`）在任何工作空间都能用上，
+但你往用户目录放一份同名技能就能覆盖它，不会被仓库锁死。
 
 ```markdown
 ---

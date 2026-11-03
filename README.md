@@ -326,7 +326,10 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 - 交互中 `/ws` 查看、`/ws 新目录` 切换（会重置对话历史，让模型知道新根）
 - 系统提示词会告诉模型当前工作空间在哪，所以直接说"读一下 周报.docx"它就能找对
 
-## 内置工具（17 个）
+## 内置工具（18 个，其中 `web_chat` 为私有可选模块）
+
+> 公开仓库是 **17 个**（`web_chat` 因 ToS 原因不入库，见 `.gitignore`）。复现：
+> `python -c "import sys;sys.path.insert(0,'.');import tools;from agent.registry import all_specs;print(len(all_specs()))"`
 
 | 工具 | 功能 | 备注 |
 |---|---|---|
@@ -345,8 +348,9 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 | `browse_url` | Playwright 打开网页提取正文 | 读文章/文档/链接 |
 | `web_screenshot` | **网页/HTML 截成图片**（首屏或整页长图 → base64 喂视觉模型） | 「截个图看看这页面渲染对不对/版式有没有错」用它；只看文字用 browse_url |
 | `web_search` | 联网搜索：**双引擎并行**（Bing 结果 + 百度AI摘要/结果） | 摘要够用可免 browse |
-| `web_chat` | **免费网页版 AI 外脑**（文心一言 / 豆包）问答 | 用本机 Chrome + CDP，需先 `--login` 登录一次 |
+| `web_chat` | **免费网页版 AI 外脑**（文心一言 / 豆包）问答 | 私有可选模块（不入库），需先 `--login` 登录一次 |
 | `skill` | **按需加载技能指令**（SKILL.md 工作流文档） | 见下方技能说明 |
+| `verify` | **按编码规范跑机械判据**：语法编译 / 文档断链 / 文档代码块 compile / 跑测试 | 配套内置技能 `coding-standards`，见下 |
 
 ### 写代码闭环（run_command / grep_file / glob_file / edit_file）
 
@@ -371,6 +375,33 @@ run_command(command="python tests/test_tools.py")   # 跑测试验证
   `glob`/`pattern` 不含 `/` 时任意子目录递归匹配（`*.py` = 全工程 py 文件）
 - **安全**：`edit_file`/`run_command` 均 `confirm=True`，CLI `--confirm` / Web 确认弹窗人工把关；
   破坏性命令（删数据、`git push --force`）系统提示词要求只在用户明确要求时执行
+
+### 编码规范：`coding-standards` 技能 + `verify` 工具
+
+仓库自带一份**写代码的标准**，随仓库走，任何工作空间启动都能用：
+
+| 层 | 载体 | 管什么 |
+|---|---|---|
+| 判断标准 | 技能 `coding-standards`（`skills/coding-standards/SKILL.md`） | 四条铁律、验证六档、错误文案要指路、禁止清单、交付检查表 —— 讲清"什么算写完了" |
+| 机械判据 | 工具 `verify` | 能不能机械判定的事，真跑一遍，不信自述 |
+
+```python
+verify(checks=["syntax"])                    # 第 0 档：内存 compile，报 文件:行号（不落 __pycache__）
+verify(checks=["links", "blocks"], path="docs")   # 文档断链 + 文档里 Python 代码块能否 compile
+verify(checks=["tests"])                     # 真起进程跑 tests/test_*.py，报退出码 + 末行
+```
+
+设计要点：
+
+- **两半分权**：错误文案该不该指路、图会不会重叠、估算有没有标注，机械判不了 → 交给技能讲；
+  "能不能编译""链接断没断"骗不了人 → 交给工具跑
+- **verify 通过 ≠ 交付合格**：工具结论里会明说这一点，避免"绿灯就当完事"
+- **内置技能优先级最低**：`{workspace}/.workbuddy/skills` > `~/.workbuddy/skills` > 仓库 `skills/`，
+  放一份同名技能到用户目录即可覆盖，不会被仓库锁死
+- **docstring 与实际一致**：`verify` 只做只读检查，不需要确认；跑测试走 `run_command` 的确认闸
+
+人类阅读版：[`docs/CODING_STANDARDS.md`](docs/CODING_STANDARDS.md)。两版同源，
+`tests/test_coding_standards.py` 会校验关键条款没有单边丢失。
 
 ### delete_file 说明（破坏性，不可恢复）
 
@@ -628,6 +659,10 @@ ollama-agent/
 │   ├── web_screenshot.py  #   Playwright 截网页/HTML → PNG 喂视觉模型
 │   ├── web_search.py      #   联网搜索（双引擎并行：Bing + 百度AI总结/结果）
 │   └── skill.py           #   技能按需加载（SKILL.md 索引入系统提示词，正文按需读）
+│   └── verify.py          #   编码规范的机械判据（语法/断链/代码块 compile/跑测试）
+├── skills/                # 内置技能（随仓库走，任何工作空间都能用）
+│   └── coding-standards/  #   编码与验证规范（配 verify 工具，见「编码规范」）
+│       └── SKILL.md
 ├── webui/                 # Web UI 层（python -m webui）
 │   ├── server.py          #   HTTP 服务（静态页 + JSON API + NDJSON 流，只绑 127.0.0.1）
 │   ├── session.py         #   会话状态（配置热更新、剪贴板暂存队列、回合锁、事件录制）
@@ -640,6 +675,7 @@ ollama-agent/
 │   ├── test_sessions.py   #   会话持久化（存档/恢复/切换/删除/全文搜索/HTTP 接口）
 │   ├── test_longdoc.py    #   长文分段精读（预算/切段无损/笔记压缩/打断/错误提示，假客户端离线跑）
 │   ├── test_notebook.py   #   主题笔记库（往返无损/FAQ 换说法/主题合并/坏文件容错）
+│   ├── test_coding_standards.py  # 内置技能 + verify（语法/断链/代码块/测试，含错误路径）
 │   ├── test_ui_sidebar.py #   侧栏收起展开的浏览器回归（Playwright）
 │   ├── test_ui_search.py  #   历史对话搜索的浏览器回归（Playwright）
 │   ├── test_ui_reset.py   #   清空/删除对话的浏览器回归（Playwright）

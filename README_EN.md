@@ -65,11 +65,18 @@ python ollama_agent.py -w D:/docs -p "read weekly-report.docx"
 The first run pre-warms the model (weights loaded into VRAM/RAM — can take a minute or
 more on small GPUs). **After that, responses in the same session are instant.**
 
-## Built-in tools (15)
+## Built-in tools (17)
+
+> Reproduce the count:
+> `python -c "import sys;sys.path.insert(0,'.');import tools;from agent.registry import all_specs;print(len(all_specs()))"`
+>
+> `web_chat` is a private optional module (not in the public repo), so a private
+> checkout registers 18 instead of 17.
 
 | Tool | What it does |
 |---|---|
 | `read_file` | Read text / Word / Excel / PPT / **PDF** (per-page text; scanned PDFs are detected and routed to `load_image`) |
+| `read_long_doc` | **Chunked deep reading** for huge documents (hundreds of pages): splits, takes notes per chunk, answers from the notes |
 | `write_file` | Write text / real `.docx` / real `.xlsx` (JSON 2-D array, CSV, TSV or Markdown table as input) |
 | `edit_file` | Surgical replace: `old_string` → `new_string`, must be unique in the file |
 | `delete_file` | Delete file/dir — refuses paths outside the workspace; non-empty dirs need `recursive=true` |
@@ -81,8 +88,10 @@ more on small GPUs). **After that, responses in the same session are instant.**
 | `render_sheet` | Render xlsx/xlsm/csv/tsv to a PNG screenshot for the vision model |
 | `clipboard_image` | Read the clipboard: screenshot → image, copied files → paths |
 | `browse_url` | Open a page with Playwright, extract the main text |
+| `web_screenshot` | Screenshot a page or raw HTML (first screen or full-page) → PNG for the vision model |
 | `web_search` | Parallel dual-engine search (Bing results + Baidu AI summary/results) |
 | `skill` | Load a SKILL.md workflow into the conversation on demand |
+| `verify` | Run the mechanical checks of the coding standard: syntax compile / broken doc links / compile Python blocks in docs / run tests |
 
 Adding a tool is one file — drop `tools/your_tool.py` with a `@tool(...)` decorated
 function, and it is auto-registered on import. Nothing else to touch.
