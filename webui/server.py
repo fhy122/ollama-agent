@@ -9,6 +9,7 @@ import json
 import mimetypes
 import re
 import shutil
+import subprocess
 import threading
 import time
 import webbrowser
@@ -32,6 +33,53 @@ _SKIP_DIRS = {HIDDEN_DIRNAME, ".uploads", ".clip_cache", ".workbuddy",
 
 # 旧版散落在工作区根下的隐藏目录 → 新家（.ollama-agent/ 下的子目录名）。
 _LEGACY_DIRS = {".uploads": "uploads", ".clip_cache": "clip"}
+
+# ---------- /api/pick_file（本机文件选择框） ----------
+# 每请求一线程（ThreadingHTTPServer），同时只许一个选择窗口：
+# 并发弹两个窗口行为未定义，锁还顺带挡住前端重复点击。
+_pick_lock = threading.Lock()
+# 记住上次选择的目录，下次对话框开在老地方（模块级：服务生命周期内有效）
+_pick_last_dir = {"dir": ""}
+
+_PICK_TIMEOUT_SEC = 360   # 对话框前人工挑选的兜底上限；前端超时 300s，比它长
+
+
+def _native_pick(initialdir: str) -> list[str]:
+    """弹系统原生「打开文件」对话框，返回选中的完整路径（可多选）。
+
+    为什么走 PowerShell 子进程（WinForms）而不是进程内 ctypes：
+      - comdlg32 GetOpenFileNameW 在 Python 进程里怎么调都
+        CDERR_STRUCTSIZE(0x1)（lStructSize 128/120 都拒、加 owner/换缓冲
+        无效），IFileOpenDialog 更是 Show 阶段直接访问违例崩进程——
+        而同进程 MessageBoxW 正常、PowerShell 弹同一对话框正常；
+      - 本机 Python 没带 tkinter（ModuleNotFoundError）；
+      - PowerShell 子进程是唯一在本机实证可弹的通道（tests/exp_dialog.ps1），
+        代价 ~1s 启动开销，可接受（点按钮本来就要等人挑文件）。
+
+    输出用 '|' 连接——Windows 文件名禁止该字符，不会撞车。
+    取消/没选返回 []。
+    """
+    esc = (initialdir or "").replace("'", "''")
+    ps = (
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8;"
+        "Add-Type -AssemblyName System.Windows.Forms | Out-Null;"
+        "$d = New-Object System.Windows.Forms.OpenFileDialog;"
+        "$d.Title = '选择要附加的文件（可多选，原路径直读不复制）';"
+        "$d.Multiselect = $true;"
+        "$d.Filter = '所有文件 (*.*)|*.*';"
+        + (f"$d.InitialDirectory = '{esc}';" if esc else "")
+        + "if ($d.ShowDialog() -eq 'OK') { $d.FileNames -join '|' }"
+    )
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", ps],
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=_PICK_TIMEOUT_SEC,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("选择窗口挂了太久，已放弃——请重试")
+    out = (r.stdout or "").strip()
+    return [p for p in out.split("|") if p]
 
 
 def migrate_legacy_dirs(ws: Path) -> None:
@@ -379,6 +427,8 @@ def make_handler(app: "WebUIApp"):
                 self.handle_upload()
             elif path == "/api/attach_path":
                 self.handle_attach_path()
+            elif path == "/api/pick_file":
+                self.pick_files()
             else:
                 self.send_json({"error": "not found"}, 404)
 
@@ -582,6 +632,31 @@ def make_handler(app: "WebUIApp"):
                 return
             self.send_json({"path": str(p), "name": p.name,
                             "size": p.stat().st_size})
+
+        def pick_files(self):
+            """弹本机文件选择框，选中的按原路径挂附件（不复制）。
+
+            痛点是「记不住路径、也不想复制粘贴」——手动输入行只当兜底。
+            服务跑在用户本机（只绑 127.0.0.1），comdlg32 弹的就是
+            Windows 系统原生对话框。拿不到锁说明已有一个窗口没人理，
+            回 409 让前端提示，而不是再叠一个。
+            """
+            if not _pick_lock.acquire(timeout=0.5):
+                self.send_json({"error": "已有一个文件选择窗口待处理"}, 409)
+                return
+            try:
+                try:
+                    paths = _native_pick(_pick_last_dir["dir"])
+                except Exception as e:
+                    self.send_json({"error": f"打不开文件选择器（{e}），"
+                                             "可展开路径输入行手动粘贴"}, 500)
+                    return
+                if paths:
+                    # 下次开在上次选的目录——顺着用户正在整理的文件夹走
+                    _pick_last_dir["dir"] = str(Path(paths[0]).parent)
+                self.send_json({"paths": paths})
+            finally:
+                _pick_lock.release()
 
     return Handler
 

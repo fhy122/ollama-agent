@@ -44,11 +44,13 @@ function toast(msg, isErr = false) {
   setTimeout(() => el.remove(), 2800);
 }
 
-async function api(path, body) {
+async function api(path, body, timeoutMs) {
   const opts = body === undefined
     ? {}
     : { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body) };
+  // 只在指定时启用：别的接口快且不该被掐；pick_file 这种要等人挑文件才需要
+  if (timeoutMs) opts.signal = AbortSignal.timeout(timeoutMs);
   const resp = await fetch(path, opts);
   return resp.json();
 }
@@ -1711,13 +1713,34 @@ $("file-input").onchange = async (e) => {
 };
 
 // 从路径添加本机文件（不复制）：服务和浏览器同一台机器，
-// 拖拽/选文件拿不到真实路径（浏览器安全模型），粘贴路径是唯一免拷贝通道
+// 拖拽/选文件拿不到真实路径（浏览器安全模型）。
+// 主通道是后端 tkinter 弹系统原生文件选择框（点选，不用记不用粘），
+// 手动输入路径行只当兜底：Shift+点 📁、或选择器开不成时自动展开
 function togglePathAttach(show) {
   const row = $("path-attach");
   row.classList.toggle("hidden", !show);
   if (show) {
     $("path-input").focus();
     $("path-input").select();
+  }
+}
+
+let _picking = false;
+async function browseFiles() {
+  if (_picking) return;
+  _picking = true;
+  try {
+    // 对话框里人工挑文件可能很久，超时给足 5 分钟
+    const r = await api("/api/pick_file", {}, 5 * 60 * 1000);
+    if (r.error) throw new Error(r.error);
+    const paths = r.paths || [];
+    paths.forEach((p) => addFileAttachment(p.split(/[\\/]/).pop(), p));
+    if (paths.length) toast(`已附加 ${paths.length} 个文件（原路径直读）`);
+  } catch (e) {
+    toast(`文件选择器没开成（${e.message}），改用手动输入`, true);
+    togglePathAttach(true);
+  } finally {
+    _picking = false;
   }
 }
 
@@ -1735,7 +1758,10 @@ async function confirmPathAttach() {
   }
 }
 
-$("btn-path").onclick = () => togglePathAttach($("path-attach").classList.contains("hidden"));
+$("btn-path").onclick = (e) => {
+  if (e.shiftKey) { togglePathAttach(true); return; }  // 兜底：手动输入
+  browseFiles();                                        // 主通道：系统选择框
+};
 $("btn-path-cancel").onclick = () => togglePathAttach(false);
 $("btn-path-ok").onclick = confirmPathAttach;
 $("path-input").addEventListener("keydown", (e) => {
