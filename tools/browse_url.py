@@ -62,13 +62,13 @@ def pw_close() -> None:
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "http/https 链接"},
-            "max_chars": {"type": "integer", "description": "正文最多返回字符数，默认 12000"},
+            "max_chars": {"type": "integer", "description": "正文最多返回字符数；不传则不在此截断，超长由 spill 整文落盘"},
         },
         "required": ["url"],
     },
     confirm=True,
 )
-def browse_url(ctx: ToolContext, url: str, max_chars: int = 12000) -> ToolResult:
+def browse_url(ctx: ToolContext, url: str, max_chars: int | None = None) -> ToolResult:
     if not re.match(r"^https?://", url or ""):
         return ToolResult("[错误] 只支持 http/https 链接")
     try:
@@ -88,7 +88,8 @@ def browse_url(ctx: ToolContext, url: str, max_chars: int = 12000) -> ToolResult
         pw_close()  # 页面崩了重启浏览器，下次调用可用
         return ToolResult(f"[错误] 打开失败 {url}: {type(e).__name__}: {str(e)[:300]}")
     text = re.sub(r"\n{3,}", "\n\n", text or "").strip()
-    max_chars = int(max_chars or 12000)
-    if len(text) > max_chars:
-        text = text[:max_chars] + f"\n…[已截断，原文 {len(text)} 字符]"
+    if max_chars:                     # 模型显式要求小窗口才在此破坏性截断；
+        max_chars = int(max_chars)    # 默认交由 dispatch 的 spill 策略整文落盘，可取回
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\n…[已截断，原文 {len(text)} 字符]"
     return ToolResult(f"[网页] {url}\n[标题] {title}\n\n{text}")

@@ -55,6 +55,7 @@ class AgentConfig:
     timeout: int = 1800                # 等新数据的上限（非整轮总时长）：只要流还在吐字就一直等
     max_steps: int = MAX_TOOL_STEPS
     stream_retries: int = 3             # 断流/超时自动重试次数上限（0 = 关闭，行为同旧版）
+    spill_max_chars: int = 12000        # 工具结果超此字符数→全文落盘+预览（0 = 关闭）
     confirm: bool = False              # True 时写/改/删文件、跑命令、联网前需人工确认
     use_color: bool = True
     show_think: bool = True            # 开思考时是否打印思考过程

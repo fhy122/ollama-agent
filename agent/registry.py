@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from agent import spill
+
 
 @dataclass
 class ToolResult:
@@ -142,4 +144,6 @@ def dispatch(name: str, args: dict, ctx: ToolContext) -> ToolResult:
     t = _REGISTRY.get(name)
     if t is None:
         return ToolResult(f"[错误] 未知工具: {name}")
-    return t.run(ctx, args or {})
+    r = t.run(ctx, args or {})
+    r.text = spill.maybe_spill(name, r.text, ctx)   # 超大输出落盘（CLI/WebUI 统一走这）
+    return r
