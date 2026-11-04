@@ -14,8 +14,8 @@ from agent.config import SYSTEM_PROMPT, AgentConfig
 from agent.events import ConsoleEmitter
 from agent.registry import ToolContext, ToolResult
 from agent.repeat_guard import RepeatGuard
-from agent.retry import (RATE_LIMIT, RETRYABLE, backoff_delay, classify_error,
-                         interruptible_sleep)
+from agent.retry import (LIMITED, RATE_LIMIT, RETRYABLE, backoff_delay,
+                         classify_error, interruptible_sleep)
 from agent import timectx
 
 import tools
@@ -376,10 +376,15 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                 history.append({"role": "assistant",
                                 "content": (content + "\n" + note) if content else note})
                 final_text = content
-                # 限流/并发超限重试用尽才走到这里：给针对性建议，别让用户只会说「继续」
+                # 收尾建议按类别给：模型受限（并发超限）重试是空转，直接提醒换模型；
+                # 瞬态限流重试用尽才到这里，等几秒常可恢复。
+                kind = classify_error(err)
                 advice = ""
-                if classify_error(err) == RATE_LIMIT:
-                    advice = ("（账号限流/并发超限：等几秒再说「继续」通常即可恢复；"
+                if kind == LIMITED:
+                    advice = ("（该模型当前使用受限（并发超限），重试无意义——"
+                              "请切换其他模型再试）")
+                elif kind == RATE_LIMIT:
+                    advice = ("（账号限流：等几秒再说「继续」通常即可恢复；"
                               "若反复出现，可切换模型，或先让其他并行会话跑完）")
                 emitter.notice(f"[⚠ 回答中断：{err}] 已保留生成到的部分，"
                                f"可直接说「继续」{advice}")

@@ -207,28 +207,29 @@ def test_run_turn_keeps_partial() -> None:
 
 
 def test_run_turn_concurrency_limit() -> None:
-    """中转站并发超限：应归类限流自动退避重试；用尽后提示里给出换模型建议。"""
+    """中转站并发超限 = 提供方限制模型使用：不重试直接停，并提醒换模型。"""
     cfg = AgentConfig(use_color=False, warm=False)
     ctx = ToolContext(use_color=False, workspace=Path("."))
     em = _Emitter()
-    err = "API 错误 429: Concurrency limit exceeded for account, please retry later"
-    client = _StubClient({"content": "并发超限前已生成的一半",
+    err = "Concurrency limit exceeded for account, please retry later"
+    client = _StubClient({"content": "受限中断前已生成的一半",
                           "tool_calls": [], "stats": {},
                           "cancelled": False, "error": err})
     history = [{"role": "system", "content": "sys"}]
 
     out = run_turn(client, cfg, ctx, history, "x", emitter=em)
 
-    assert out == "并发超限前已生成的一半", out
-    # 分类为限流 → 自动退避重试（1 次首发 + stream_retries 次续写）
-    assert client.calls == 1 + cfg.stream_retries, client.calls
-    assert "并发超限前已生成的一半" in history[-1]["content"], history[-1]
+    assert out == "受限中断前已生成的一半", out
+    # 受限不是瞬态：自动重试一次都不该发生
+    assert client.calls == 1, f"模型受限不应重试，实际调了 {client.calls} 次"
+    # 半截输出保留，可接着说「继续」拿到已生成部分
+    assert "受限中断前已生成的一半" in history[-1]["content"], history[-1]
     notes = [v for k, v in em.events if k == "notice"]
     final = notes[-1]
     assert "回答中断" in str(final), notes
-    assert "切换模型" in str(final) and "等几秒" in str(final), \
-        f"限流收尾应给针对性建议，实际 {final}"
-    print("PASS: 并发超限自动重试 + 收尾建议（等几秒/切换模型）")
+    assert "切换其他模型" in str(final), \
+        f"模型受限收尾应明确提醒换模型，实际 {final}"
+    print("PASS: 并发超限不重试直接停 + 明确提醒切换其他模型")
 
 
 def test_post_chat_first_byte_timeout() -> None:

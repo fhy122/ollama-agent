@@ -22,6 +22,7 @@ import random
 import time
 
 RATE_LIMIT = "rate_limit"
+LIMITED = "limited"      # 账号/模型使用受限（如并发超限）：重试无意义，该换模型
 SERVER = "server"
 TIMEOUT = "timeout"
 TRANSPORT = "transport"
@@ -41,11 +42,14 @@ _JITTER = 0.1            # 对称抖动比例
 def classify_error(text: str) -> str:
     """从错误文本识别类别。识别不出按 FATAL 处理（宁可多报一次错，不可空转）。"""
     low = (text or "").lower()
-    # 限流：HTTP 429 / 各家措辞（中转站并发超限常写作 "Concurrency limit
-    # exceeded"——按账号算的瞬态限制，退避重试常可自愈）
+    # 账号/模型使用受限：提供方不给用这个模型（中转站 "Concurrency limit
+    # exceeded for account" 的实际含义）。重试是空转——判定须排在 429 之前，
+    # 否则带 "API 错误 429:" 前缀的同文本会被误判成瞬态限流。
+    if "concurrency" in low or "并发超限" in low:
+        return LIMITED
+    # 限流：HTTP 429 / 各家措辞（瞬态，退避重试常可自愈）
     if ("429" in low or "rate limit" in low or "rate_limit" in low
-            or "too many requests" in low or "concurrency" in low
-            or "并发超限" in low):
+            or "too many requests" in low):
         return RATE_LIMIT
     # 服务端错误：API 错误 5xx / overloaded
     for marker in ("api 错误 50", "api 错误 52", "internal server", "overloaded", "bad gateway"):

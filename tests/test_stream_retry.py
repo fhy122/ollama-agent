@@ -31,10 +31,13 @@ def test_classify_retryable_vs_fatal():
     assert classify_error("等xxx第一个字节超过 180 秒仍无响应") == "timeout"
     assert classify_error("TimeoutError: timed out") == "timeout"
     assert classify_error("xxx API 错误 429: rate limited") == "rate_limit"
-    # 中转站并发超限的实际措辞（2026-11 实发）：此前落 FATAL 一次重试都没有
+    # 中转站并发超限的实际措辞（2026-11 实发）：提供方限制模型使用，重试是空转。
+    # 类别 limited 判定优先于 429——同文本带 "API 错误 429:" 前缀也不能归瞬态限流
     assert classify_error(
-        "Concurrency limit exceeded for account, please retry later") == "rate_limit"
-    assert classify_error("账号并发超限，请稍后再试") == "rate_limit"
+        "Concurrency limit exceeded for account, please retry later") == "limited"
+    assert classify_error(
+        "API 错误 429: Concurrency limit exceeded for account") == "limited"
+    assert classify_error("账号并发超限，请稍后再试") == "limited"
     assert classify_error("xxx API 错误 503: overloaded") == "server"
     assert classify_error("连不上xxx：ConnectionResetError") == "transport"
     assert classify_error("流意外结束（未收到 done 帧）") == "transport"
