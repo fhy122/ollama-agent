@@ -12,7 +12,7 @@ DEFAULT_CTX = 65536
 # num_ctx 上限：ollama 会照单全收这个值并尝试分配 KV cache，
 # 填 10**9 只会换来一个难以归因的 OOM。这里按本地大模型的实际天花板截住。
 MAX_CTX = 1_048_576
-MAX_TOOL_STEPS = 12
+MAX_TOOL_STEPS = 25
 
 # think 字段取值：off=False 关思考（默认）；auto=完全不传该字段（兼容不支持思考的模型）
 THINK_VALUES: dict[str, "bool | str | None"] = {
