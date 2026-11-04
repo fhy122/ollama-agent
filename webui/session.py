@@ -1030,9 +1030,14 @@ class SessionHub:
 
     def open_session(self, sid: str) -> dict:
         """切换视图：忙碌也放行（后台继续跑）。目标在生成中时前端走 /api/live 接管。"""
-        inst = self._by_sid(str(sid or ""))
+        sid = str(sid or "")
+        inst = self._by_sid(sid)
         if inst is None:
-            return {"error": "对话不存在或已被删除", "code": 404}
+            # 未实例化的历史会话（boot 只载最近一条）：磁盘上有 → 按需加载一条实例。
+            # 实测教训：只查 _all 会把「重启服务后点开任何旧会话」全变成 404。
+            if not self._store.load(sid):
+                return {"error": "对话不存在或已被删除", "code": 404}
+            inst = self._spawn(sid)
         self._cur = inst
         inst.attention = False           # 用户已经看过，通知清掉
         r = inst.current()

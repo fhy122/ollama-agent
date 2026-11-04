@@ -169,3 +169,29 @@ def test_config_shared_across_instances(tmp_path):
     b = h._spawn("")                      # 新并行实例：读到关闭后的偏好
     assert b.confirm is False
     assert b.user_cfg is a.user_cfg, "共享同一 user_cfg dict"
+
+
+def test_open_uninstantiated_old_session(tmp_path):
+    """boot 后点开「未实例化」的历史会话：磁盘上有 → 按需加载，不能 404。
+
+    回归：并行重构后 open_session 只查 _all（boot 只实例化最近一条），
+    服务重启后点开任何更早的历史会话都会报「对话不存在」。
+    """
+    import json
+    h = _hub(tmp_path)
+    store_dir = tmp_path / "sessions"
+    sid = "20261101-090000-old1"
+    (store_dir / f"{sid}.json").write_text(json.dumps({
+        "id": sid, "title": "很早的会话", "created": 1, "updated": 2,
+        "history": [{"role": "user", "content": "老问题"}],
+        "turns": [{"role": "user", "text": "老问题"}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    r = h.open_session(sid)
+    assert r.get("error") is None, f"打开旧会话不应 404: {r}"
+    assert h._cur is h._by_sid(sid), "打开后应成为当前实例"
+    assert h._cur.history[-1]["content"] == "老问题", "历史应被加载"
+
+    # 磁盘上不存在的 sid 仍 404
+    r2 = h.open_session("20261101-090000-none")
+    assert r2.get("code") == 404, r2
