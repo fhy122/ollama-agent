@@ -205,8 +205,34 @@ function renderMarkdown(src) {
   }).join("");
 }
 
-function scrollBottom() {
+// ---- 自动跟随（stick-to-bottom）----
+// 输出中每个增量都调 scrollBottom 会把上滑回看的用户拽回底部。
+// 规则：用户滚离底部 → 跟随暂停；滚回底部（或点「回到底部」）→ 恢复。
+// 主动作（发消息、切会话、回放历史）强制滚底并顺带恢复跟随。
+let followBottom = true;
+
+function distFromBottom() {
+  return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+}
+
+messagesEl.addEventListener("scroll", () => {
+  followBottom = distFromBottom() < 48;
+  updateJumpBtn();
+}, { passive: true });
+
+function updateJumpBtn() {
+  const btn = $("jump-bottom");
+  if (!btn) return;
+  // 离底超过一屏的 1/8 且确有消息时才值得打扰（空态/贴底都收起）
+  const hasMsgs = messagesEl.querySelector(".msg") !== null;
+  btn.classList.toggle("hidden", distFromBottom() < 120 || !hasMsgs);
+}
+
+function scrollBottom(force) {
+  if (!force && !followBottom) { updateJumpBtn(); return; }
+  if (force) followBottom = true;
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  updateJumpBtn();
 }
 
 // ---------------- 图片查看器 ----------------
@@ -540,7 +566,7 @@ function replayTurns(turns) {
       turn.finalize();
     }
   }
-  scrollBottom();
+  scrollBottom(true);   // 打开会话/回放历史 = 用户要看最新
 }
 
 async function openSessionById(id) {
@@ -666,7 +692,7 @@ function addUserMsg(text, imgs, files, imgCount = 0) {
   wrap.innerHTML = `<div class="body">${inner}</div>`;
   messagesEl.appendChild(wrap);
   addOutline(text || (imgs.length || imgCount ? "[图片]" : "[文件]"), wrap);
-  scrollBottom();
+  scrollBottom(true);   // 用户发消息 = 明确想看底部
 }
 
 function newAssistantTurn() {
@@ -679,7 +705,7 @@ function newAssistantTurn() {
   const body = wrap.querySelector(".body");
   wrap.dataset.rawAll = "";
   messagesEl.appendChild(wrap);
-  scrollBottom();
+  scrollBottom(true);   // 新回合从用户刚发的内容开始，贴底
   return {
     root: bubble,
     body,
@@ -2137,7 +2163,10 @@ searchInput.addEventListener("keydown", (e) => {
   }
 });
 btnSearchClear.onclick = () => clearSearch();
-$("btn-refresh-outline").onclick = () => scrollBottom();
+$("btn-refresh-outline").onclick = () => scrollBottom(true);
+
+// 「回到底部」悬浮按钮：恢复跟随 + 滚底（scroll 事件会顺带收起自己）
+$("jump-bottom").onclick = () => scrollBottom(true);
 $("pv-close").onclick = () => $("preview-modal").classList.add("hidden");
 $("preview-modal").addEventListener("click", (e) => {
   if (e.target.id === "preview-modal") e.currentTarget.classList.add("hidden");
