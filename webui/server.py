@@ -342,6 +342,8 @@ def make_handler(app: "WebUIApp"):
                 self.send_static("index.html")
             elif path.startswith("/static/"):
                 self.send_static(path[len("/static/"):])
+            elif path == "/favicon.ico":
+                self.send_static("favicon.ico")
             elif path == "/api/health":
                 self.send_json({"ok": True, "model": app.session.cfg.model})
             elif path == "/api/config":
