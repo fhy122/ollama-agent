@@ -437,6 +437,8 @@ button:focus-visible, .icon-btn:focus-visible, .ws-item:focus-visible, .ol-item:
 }
 .msg.assistant:hover .msg-actions,
 .msg-actions:focus-within { opacity: 1; }
+/* 「⚡ 继续生成」是断点续跑的主动作，必须常显——藏进 hover 用户根本不知道有 */
+.msg-actions:has(.continue-btn) { opacity: 1; }
 .act-btn {
   display: inline-flex; align-items: center; gap: 5px;
   height: 28px; padding: 0 9px;
@@ -446,6 +448,15 @@ button:focus-visible, .icon-btn:focus-visible, .ws-item:focus-visible, .ol-item:
 }
 .act-btn:hover { background: var(--accent-soft); color: var(--accent); }
 .act-btn.done { color: var(--ok); }
+/* 「⚡ 继续生成」：断点续跑的主动作，比普通消息操作醒目一档 */
+.continue-btn {
+  color: var(--accent);
+  font-weight: 620;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+.continue-btn:hover { background: var(--accent); color: #fff; }
 
 /* 步骤分隔 */
 .step-divider {

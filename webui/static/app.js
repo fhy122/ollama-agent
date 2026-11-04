@@ -675,6 +675,9 @@ function toggleSidebar() {
 // ---------------- 消息渲染 ----------------
 function addUserMsg(text, imgs, files, imgCount = 0) {
   welcomeEl.style.display = "none";
+  // 旧中断回合的「⚡ 继续生成」随新消息过期收掉（用户已经自己接上了话头）
+  document.querySelectorAll(".continue-btn").forEach(
+    (b) => b.closest(".msg-actions")?.remove());
   const wrap = document.createElement("div");
   wrap.className = "msg user";
   let inner = "";
@@ -848,6 +851,18 @@ function newAssistantTurn() {
         .forEach((el) => el.classList.remove("streaming-cursor"));
       this.closeThink();
       this.addActions();
+      if (this.interrupted) this.addContinue();
+    },
+    // 断点续跑：重试用尽/手动打断的回合尾部给一个一键「继续」，
+    // 免去用户重新打字。点击走正常发送路径（与手敲「继续」完全等价）。
+    addContinue() {
+      if (this._continue) return;
+      const bar = document.createElement("div");
+      bar.className = "msg-actions";
+      bar.innerHTML = '<button class="act-btn continue-btn" data-act="continue-turn"' +
+        ' title="从断点继续这个任务">⚡ 继续生成</button>';
+      this.body.appendChild(bar);
+      this._continue = bar;
     },
     addActions() {
       if (this._actions) return;
@@ -921,6 +936,22 @@ async function sendMessage() {
   autoGrow();
   clearAttachments();
   await runTurnStream(text, imgs, files);
+}
+
+// 断点续跑：「⚡ 继续生成」按钮 → 与手敲「继续」完全等价，复用正常发送路径
+async function continueTurn() {
+  if (state.busy) {
+    // 罕见竞态（按钮在的话回合基本已结束）：按队列语义排队
+    state.queue.push({
+      id: `q${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+      sid: state.sid,
+      text: "继续", imgs: [], files: [],
+    });
+    renderQueue();
+    toast("已排队，本回合结束后自动发送");
+    return;
+  }
+  await runTurnStream("继续", [], []);
 }
 
 // ---------------- 输入队列（生成中排队，参考 DeepSeek Harness inbox）----------------
@@ -1198,6 +1229,12 @@ function applyEvent(turn, ev) {
       const el = turn.ensureText();
       el.dataset.raw = (el.dataset.raw || "") + `\n${ev.text}`;
       turn.renderStream();
+      // 「继续生成」按钮的判据：只认最终收尾的两种——
+      // 「回答中断：」= 自动重试用尽/不可重试断流的收尾（续写进行中的那条
+  // 带「自动续写」字样，不匹配）；「已打断本轮回答」= 用户手动停止。
+      if (ev.text.includes("回答中断：") || ev.text.includes("已打断本轮回答")) {
+        turn.interrupted = true;
+      }
       break;
     }
     case "user":
@@ -1960,6 +1997,11 @@ document.addEventListener("click", (e) => {
       || (rawEl ? rawEl.dataset.raw : "")
       || (msg.querySelector(".bubble")?.textContent || "");
     copyText(text.trim(), t);
+    return;
+  }
+
+  if (act === "continue-turn") {
+    continueTurn();
     return;
   }
 
