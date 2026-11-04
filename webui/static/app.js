@@ -1448,9 +1448,11 @@ function markSwitching(row) {
 
 // 模型配置清单（内置 Ollama + 自定义）。服务端返回的 Key 一律已打码，
 // 完整 Key 永远不下发到浏览器。
-async function loadModels() {
+// opts.refresh=true 才让服务端真正探测本地 Ollama（打开设置默认走缓存，
+// 实测探测会把抽屉卡住数秒——刷新交给「刷新」按钮，用户点才算数）。
+async function loadModels(opts = {}) {
   try {
-    const r = await api("/api/models");
+    const r = await api("/api/models" + (opts.refresh ? "?refresh=1" : ""));
     state.models = r;
     renderBuiltin(r.builtin || {});
     renderCustom(r.profiles || [], r.active || "");
@@ -1467,6 +1469,13 @@ function renderBuiltin(b) {
   const box = $("builtin-models");
   const note = $("builtin-note");
   const models = b.models || [];
+  if (b.stale) {
+    // 还从没拉过列表（打开设置不再自动探测）：明说怎么拿，别让人以为是坏了
+    note.textContent = "尚未加载本地模型列表：点右上「刷新」获取。";
+    note.title = "打开设置不再自动探测本地 Ollama（避免卡顿），点「刷新」手动加载。";
+    box.innerHTML = '<p class="sb-empty">未加载——点右上「刷新」</p>';
+    return;
+  }
   if (b.error) {
     // 本地没开 Ollama 是常态（用中转站的人不需要它），不该渲染成红色错误。
     // 但要说清「为什么空」和「怎么恢复」。
@@ -2172,8 +2181,15 @@ $("btn-close-settings").onclick = () => {
   closeModelForm();      // 关抽屉时收起表单，下次打开不残留上次编辑的内容
 };
 $("btn-apply").onclick = applyConfig;
-$("btn-refresh-models").onclick = () => { loadConfig(); loadModels(); };
-$("btn-refresh-builtin").onclick = loadModels;
+$("btn-refresh-models").onclick = () => {
+  $("builtin-note").textContent = "刷新中…";
+  loadConfig();
+  loadModels({refresh: true});      // 「刷新全部」是显式动作，允许真探测
+};
+$("btn-refresh-builtin").onclick = () => {
+  $("builtin-note").textContent = "刷新中…";
+  loadModels({refresh: true});
+};
 $("btn-new-model").onclick = () => openModelForm(null);
 $("btn-mf-probe").onclick = probeModel;
 $("btn-mf-save").onclick = saveModel;

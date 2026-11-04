@@ -15,7 +15,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from agent import HIDDEN_DIRNAME
 from agent.config import THINK_VALUES, AgentConfig
@@ -194,6 +194,11 @@ def _full_config(app) -> dict:
 # 都要调它，一挂就把整个设置面板卡成转圈。
 LIST_MODELS_BUDGET = 6.0
 
+# TTL 缓存（60s）：打开设置同样不该反复等这 6 秒预算。单槽位（当前生效的
+# client 才有意义，换配置即失效）；空结果不缓存——瞬态失败不该粘住一分钟。
+_LIST_MODELS_TTL = 60.0
+_list_models_cache: dict = {"client": None, "at": 0.0, "models": []}
+
 
 def _safe_list_models(client) -> list[str]:
     """带超时预算地列模型；超时/失败一律返回空列表，绝不阻塞设置面板。
@@ -203,6 +208,10 @@ def _safe_list_models(client) -> list[str]:
     泄漏一个后台线程可以接受（它最终会自己超时结束），
     但让人对着设置面板干等 15 秒不可接受。
     """
+    now = time.time()
+    hit = _list_models_cache
+    if (hit["client"] is client and now - hit["at"] < _LIST_MODELS_TTL):
+        return hit["models"]
     box: dict = {}
 
     def work():
@@ -214,7 +223,12 @@ def _safe_list_models(client) -> list[str]:
     th = threading.Thread(target=work, daemon=True)
     th.start()
     th.join(LIST_MODELS_BUDGET)
-    return box.get("models") or []
+    models = box.get("models") or []
+    if models:
+        hit["client"] = client
+        hit["at"] = now
+        hit["models"] = models
+    return models
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".ico", ".svg"}
@@ -376,7 +390,11 @@ def make_handler(app: "WebUIApp"):
                 self.send_json({"files": _search_files(
                     app.session.workspace, unquote(m.group(1)) if m else "")})
             elif path == "/api/models":
-                self.send_json(app.session.profiles_view())
+                # 默认走缓存秒回（打开设置面板不能卡）；?refresh=1 才真正探测
+                # 本地 Ollama（前端「刷新」/「刷新全部」按钮专用）
+                qs = parse_qs(urlparse(self.path).query)
+                self.send_json(app.session.profiles_view(
+                    refresh_builtin=bool(qs.get("refresh"))))
             elif path == "/api/file":
                 self.handle_file()
             else:

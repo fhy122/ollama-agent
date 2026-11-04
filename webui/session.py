@@ -26,6 +26,30 @@ FEATURES = (
 )
 
 
+# 本地 Ollama 模型列表缓存（模块级：一台机器一个 Ollama，并行会话实例共享一份）。
+# 打开设置面板**不探测**（实测：Ollama 忙着生成时 /api/tags 排队，抽屉卡住数秒），
+# 只在两个时机真正访问 /api/tags：①用户点「刷新」；②切换内置模型时的校验读取。
+# fetched=False 表示从没拉过，前端显示「点刷新获取」而不是误导性的空列表。
+_OLLAMA_MODELS_CACHE: dict = {"models": [], "fetched": False}
+
+
+def _probe_ollama_models() -> tuple[list[str], str]:
+    """真正访问 /api/tags 拉内置模型列表，成功则喂缓存。返回 (列表, 错误)。"""
+    try:
+        from agent.backends.ollama import OllamaClient
+        tmp = AgentConfig()
+        tmp.provider = "ollama"
+        models = _list_models_with_budget(OllamaClient(tmp), 4.0)
+        _OLLAMA_MODELS_CACHE["models"] = models
+        _OLLAMA_MODELS_CACHE["fetched"] = True
+        return models, ""
+    except Exception as e:
+        if _OLLAMA_MODELS_CACHE["fetched"]:
+            # 有旧列表就继续用旧的：网络抖一下不该把能用的列表清空
+            return _OLLAMA_MODELS_CACHE["models"], ""
+        return [], f"读不到本地 Ollama 模型列表：{e}"
+
+
 def _list_models_with_budget(client, budget: float) -> list[str]:
     """带超时预算地列模型；超时或失败返回空列表。
 
@@ -327,23 +351,21 @@ class AgentSession:
         except (TypeError, ValueError):
             pass
 
-    def profiles_view(self) -> dict:
-        """给前端的模型配置清单：Key 一律打码，内置条目带实时模型列表。"""
+    def profiles_view(self, refresh_builtin: bool = False) -> dict:
+        """给前端的模型配置清单：Key 一律打码，内置条目带缓存的模型列表。
+
+        默认**不探测** Ollama（打开设置面板的必调接口，探测会把抽屉卡住数秒）；
+        refresh_builtin=True 才真正访问 /api/tags（前端「刷新」按钮专用）。
+        """
         store = self.config_store
         cfg = self.user_cfg
-        builtin_models: list[str] = []
-        builtin_error = ""
-        try:
-            # 内置 Ollama 条目：模型列表实时从 /api/tags 读，不写进配置文件
-            # （写进去就会过期：装一个新模型，列表还是旧的）。
-            # 加超时预算：本地 Ollama 没启动时，DNS/连接阶段可能挂很久，
-            # 而这个接口是打开设置面板必调的，不能让它拖住整个抽屉。
-            from agent.backends.ollama import OllamaClient
-            tmp = AgentConfig()
-            tmp.provider = "ollama"
-            builtin_models = _list_models_with_budget(OllamaClient(tmp), 4.0)
-        except Exception as e:
-            builtin_error = f"读不到本地 Ollama 模型列表：{e}"
+        if refresh_builtin:
+            builtin_models, builtin_error = _probe_ollama_models()
+            stale = False
+        else:
+            builtin_models = list(_OLLAMA_MODELS_CACHE["models"])
+            builtin_error = ""
+            stale = not _OLLAMA_MODELS_CACHE["fetched"]
 
         rows = []
         for p in cfg.get("profiles") or []:
@@ -366,6 +388,7 @@ class AgentSession:
                 "host": self.cfg.host,
                 "models": builtin_models,
                 "error": builtin_error,
+                "stale": stale,
             },
             "config_path": str(store.path),
             "recovered": cfg.get("_recovered") or "",
@@ -474,7 +497,13 @@ class AgentSession:
             tmp = AgentConfig()
             tmp.provider = "ollama"
             tmp.host = host or DEFAULT_HOST
-            return set(_list_models_with_budget(OllamaClient(tmp), 4.0))
+            names = set(_list_models_with_budget(OllamaClient(tmp), 4.0))
+            if names:
+                # 校验读取顺手喂列表缓存：切换过内置模型 = /api/tags 刚访问过，
+                # 设置面板直接展示这份，不必再让用户点刷新
+                _OLLAMA_MODELS_CACHE["models"] = sorted(names)
+                _OLLAMA_MODELS_CACHE["fetched"] = True
+            return names
         except Exception:
             return set()
 

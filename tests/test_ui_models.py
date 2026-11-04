@@ -1,7 +1,7 @@
 """模型管理界面回归测试（Playwright，离线，不联网）。
 
 盯住的需求：设置面板要能管两类模型 ——
-  1. 内置 Ollama 模型列表（来自 /api/tags，实时读）；
+  1. 内置 Ollama 模型列表（来自 /api/tags；打开设置不自动探测，点「刷新」才拉）；
   2. 自定义模型列表（用户填 /v1 地址 + Key + 模型名，落盘持久化）。
 并支持新增 / 修改 / 删除 / 切换。
 
@@ -132,9 +132,14 @@ def main():
                 assert t["tabs"] == ["模型管理", "偏好"], f"标签页不对: {t}"
                 assert t["active"] == "models", f"默认应停在模型管理: {t}"
 
-                # 2. 内置区渲染出模型
+                # 2. 打开设置不自动探测（2026-11-04 卡顿修复）：首次见「未加载」提示，
+                #    点「刷新」才真正拉 /api/tags
+                note0 = page.locator("#builtin-note").inner_text()
+                assert "尚未加载" in note0, f"首次打开应显示未加载提示（零探测）: {note0}"
+                page.click("#btn-refresh-builtin")
+                page.wait_for_timeout(2500)   # 真 Ollama 探测，本机通常亚秒完成
                 m = _models_ui(page)
-                assert m["builtinRows"] > 0, f"内置 Ollama 应列出模型: {m}"
+                assert m["builtinRows"] > 0, f"点刷新后内置 Ollama 应列出模型: {m}"
                 assert m["builtinActive"], f"应标出当前在用的内置模型: {m}"
                 assert "使用中" in m["builtinTags"], f"在用项要有「使用中」标记: {m}"
 
