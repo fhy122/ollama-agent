@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from agent.retry import DEFAULT_MAX_RETRIES
+
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_PROVIDER = "ollama"          # ollama | openai，见 agent/providers.py
@@ -54,7 +56,7 @@ class AgentConfig:
     keep_alive: str = "30m"
     timeout: int = 1800                # 等新数据的上限（非整轮总时长）：只要流还在吐字就一直等
     max_steps: int = MAX_TOOL_STEPS
-    stream_retries: int = 3             # 断流/超时自动重试次数上限（0 = 关闭，行为同旧版）
+    stream_retries: int = DEFAULT_MAX_RETRIES   # 断流/超时自动重试次数上限（0 = 关闭，行为同旧版）
     spill_max_chars: int = 12000        # 工具结果超此字符数→全文落盘+预览（0 = 关闭）
     time_context: bool = True           # 每次请求注入时间读数（帮模型理解「今天/等了多久」）
     time_refresh_sec: int = 600         # 时间读数刷新间隔；0 = 每步都注入

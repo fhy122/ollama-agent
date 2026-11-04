@@ -190,7 +190,7 @@ def test_run_turn_keeps_partial() -> None:
     out = run_turn(client, cfg, ctx, history, "怎么做自动化测试", emitter=em)
 
     assert out == "自动化测试策略前半段", out
-    # 每次半截断流都触发自动续写：首次 + 重试 3 次 = 4 次调用（stream_retries=3）
+    # 每次半截断流都触发自动续写：首次 + 重试 N 次（N = cfg.stream_retries）
     assert client.calls == 1 + cfg.stream_retries, client.calls
     last = history[-1]
     assert last["role"] == "assistant", last

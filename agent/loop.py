@@ -296,8 +296,11 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                         # 否则心跳会被这些看不见的块一路抑制掉。
                         think_hidden=getattr(emitter, "think_hidden", True),
                     )
-                except RuntimeError as e:
-                    # _post_stream 阶段失败（连不上 / 等第一个字节超时 / API 状态错）。
+                except Exception as e:
+                    # 请求阶段失败。不能只捕 RuntimeError：http.client / ssl 层的
+                    # 瞬态错误是裸抛的 OSError 家族（实测 ssl.SSLError「EOF occurred
+                    # in violation of protocol」直接穿透重试网把回合弄死）。
+                    # 识别不出的错误 classify_error 会归为 FATAL，照样 raise，语义不变。
                     if _stopped():
                         # 打断与断连的竞态：按打断收尾，别把主动停止报成错误
                         resp = {"thinking": "", "content": "", "tool_calls": [],

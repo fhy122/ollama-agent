@@ -34,6 +34,9 @@ def test_classify_retryable_vs_fatal():
     assert classify_error("xxx API 错误 503: overloaded") == "server"
     assert classify_error("连不上xxx：ConnectionResetError") == "transport"
     assert classify_error("流意外结束（未收到 done 帧）") == "transport"
+    # 裸抛的 OSError 家族：ssl.SSLError 是今天实发的形态（中转站 TLS 被掐）
+    assert classify_error(
+        "SSLError: EOF occurred in violation of protocol (_ssl.c:2406)") == "transport"
     # Key 错 / 参数错：重试无意义
     assert classify_error("xxx API 错误 401: invalid api key") == FATAL
     assert classify_error("xxx API 错误 400: invalid request") == FATAL
@@ -117,6 +120,34 @@ def test_empty_failure_retries_then_recovers():
     # 重跑请求与第一次完全相同（历史未被污染）
     assert client.seen[0] == client.seen[1]
     assert any("自动重试" in n for n in em.notices), em.notices
+
+
+def test_bare_ssl_error_gets_retried():
+    """裸抛的 ssl.SSLError（OSError 家族）必须被重试网接住。
+
+    实发案例：中转站 TLS 连接被掐，ssl.SSLError 从 http.client 裸抛，
+    旧代码只捕 RuntimeError，一步重试都没走直接把回合弄死。
+    """
+    import ssl
+    client = _ScriptedClient([
+        ssl.SSLError("EOF occurred in violation of protocol (_ssl.c:2406)"),
+        _resp(content="恢复后完成"),
+    ])
+    out, history, em = _turn(client)
+    assert out == "恢复后完成"
+    assert client.calls == 2
+    assert any("自动重试" in n for n in em.notices), em.notices
+
+
+def test_bare_fatal_error_still_raises():
+    """裸抛的非瞬态错误（如 ValueError 包 401）照旧 raise，不因撒宽重试网而空转。"""
+    client = _ScriptedClient([
+        ValueError("xxx API 错误 401: invalid api key"),
+        _resp(content="不该走到这"),
+    ])
+    with pytest.raises(ValueError):
+        _turn(client)
+    assert client.calls == 1
 
 
 def test_exhausted_empty_failures_end_with_note():

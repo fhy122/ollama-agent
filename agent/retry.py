@@ -29,10 +29,9 @@ FATAL = "fatal"          # Key 错 / 参数错 / 鉴权：重试无意义
 
 RETRYABLE = frozenset({RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT})
 
-# 默认重试上限。DSH 默认 5；我们取 3——TTFT 预算 180s 很长，
-# 「没反应」场景一次重试就可能再等 3 分钟，3 次已覆盖绝大多数瞬断，
-# 再多只会让用户对着「重试中」干等。
-DEFAULT_MAX_RETRIES = 3
+# 默认重试上限（DSH 默认 5，与老板偏好一致）。
+# 退避期间 interruptible_sleep 随时响应打断，不会让用户对着「重试中」干等。
+DEFAULT_MAX_RETRIES = 5
 
 _BASE_DELAY = 1.0        # 首次退避秒数
 _CAP_DELAY = 8.0         # 退避上限
