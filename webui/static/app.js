@@ -165,7 +165,9 @@ function codeBlockHtml(raw, lang) {
 }
 
 function renderMarkdown(src) {
-  const parts = String(src).split(/(```[\s\S]*?```)/g);
+  // Windows 换行先归一化：正则里的 $ 不吃 \r，行末多出的 \r 会让
+  // 表格/标题/列表的 ^…$ 逐行匹配全部失配（实测：CRLF 的 .md 表格渲染成纯文本）
+  const parts = String(src).replace(/\r\n?/g, "\n").split(/(```[\s\S]*?```)/g);
   return parts.map((part) => {
     if (part.startsWith("```")) {
       const m = part.match(/^```([\w+#.-]*)\n?([\s\S]*?)```$/);
