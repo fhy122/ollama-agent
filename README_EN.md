@@ -2,6 +2,12 @@
 
 [简体中文](README.md) | **English**
 
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Tests](https://img.shields.io/badge/tests-204%20passed-brightgreen)
+![Runtime](https://img.shields.io/badge/Ollama-localhost%3A11434-8b5cf6)
+![UI](https://img.shields.io/badge/Web_UI-zero--framework-orange)
+
 <p align="center">
   <img src="docs/screenshots/chat.png" alt="Ollama Agent Web UI — light theme" width="49%">
   <img src="docs/screenshots/theme-dark.png" alt="Ollama Agent Web UI — dark theme, tool call cards" width="49%">
@@ -14,13 +20,24 @@ function calling + **thinking off by default** (`think=false`) + file I/O + visi
 > This project has exactly two core goals: **let the model skip thinking** (`think=false` saves time and tokens), and
 > **keep context under control** (default 65536).
 
+## Highlights
+
+| | |
+|---|---|
+| 🪶 **Zero framework** | Core is pure Python stdlib (urllib straight to Ollama); the Web UI is just three files — `index.html / app.js / style.css`. No Node, no bundler, every line readable. |
+| 🧰 **19 built-in tools** | Word / Excel / PPT / PDF read-write-render, shell, grep/glob, vision, clipboard screenshots (global hotkey), Bing+Baidu parallel search, URL reading, todos, on-demand skills. |
+| 💬 **Parallel sessions** | One conversation generating, another one asking; live sidebar badges (● generating / ✦ finished in background); a page refresh never kills a running turn. |
+| 🔁 **Stream self-healing** | Error classification + exponential-backoff retries, **half-printed output kept** and continued from the break; idle budget tells "thinking" from "dead connection". |
+| 🛡️ **Confirmation gates** | Writes / deletes / shell / network all require confirmation; `delete_file` is locked inside the workspace. |
+| 🖥️ **Small-model friendly** | `think=false` by default; minimal system prompt; images stripped from history to keep the KV cache small. |
+
 ## Features
 
 - **Web UI** — streaming chat, expandable tool-call cards, session history with full-text search, file preview, settings panel. Zero JS frameworks: just `index.html / app.js / style.css`.
 - **Parallel sessions** — each conversation is an independent agent instance: start a new chat while another one is still generating; the sidebar shows live badges (● generating, ✦ finished in background). A page refresh never kills a running turn — the frontend re-attaches via a live event snapshot.
 - **Input queue** — typing + Enter while the model is generating queues the message instead of interrupting: send it immediately via steer (takes effect at the next tool-step boundary), edit it back out, delete it, or let it auto-send when the turn ends.
 - **Stream resilience** — broken streams are classified and retried with backoff (half-printed output is kept and continued); a socket idle budget (default 120 s) distinguishes "model thinking" from "connection dead"; repeated identical tool calls trigger gentle reminders; oversized tool output spills to disk with a retrievable preview; per-step time context keeps the model aware of elapsed time.
-- **15 built-in tools** — read/write/edit/delete files (text, Word, Excel, PPT, PDF), run shell commands, grep/glob, render spreadsheets to PNG, load images for vision models, clipboard screenshots (global hotkey), browse URLs, web search (Bing + Baidu in parallel), on-demand skill loading.
+- **19 built-in tools** — read/write/edit/delete files (text, Word, Excel, PPT, PDF), run shell commands, grep/glob, render spreadsheets to PNG, load images for vision models, clipboard screenshots (global hotkey), browse URLs, web search (Bing + Baidu in parallel), on-demand skill loading.
 - **Small-model friendly** — `think=false` by default; concise system prompt (no hardcoded tool rules — tool policies live in each tool's description); images are stripped from history between turns to keep the KV cache small.
 - **Safety rails** — destructive tools (`write_file` / `edit_file` / `delete_file` / `run_command` / network) require confirmation before execution (y/N in CLI, dialog in Web UI); `delete_file` refuses paths outside the workspace and non-recursive deletion of non-empty directories.
 - **Persistence** — each conversation is a JSON file on disk; tool calls, code blocks and reasoning are replayed exactly when you switch back to an old session.

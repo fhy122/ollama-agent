@@ -2,6 +2,12 @@
 
 [English](README_EN.md) | **简体中文**
 
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Tests](https://img.shields.io/badge/tests-204%20passed-brightgreen)
+![Runtime](https://img.shields.io/badge/Ollama-localhost%3A11434-8b5cf6)
+![UI](https://img.shields.io/badge/Web_UI-零框架-orange)
+
 <p align="center">
   <img src="docs/screenshots/chat.png" alt="Web UI 浅色主题——Excel 渲染与代码卡片" width="49%">
   <img src="docs/screenshots/theme-dark.png" alt="Web UI 深色主题——工具调用卡片" width="49%">
@@ -16,6 +22,17 @@ Web UI and confirmation gates on destructive tools. See [README_EN.md](README_EN
 
 > 为什么自己做：市面上的 Agent 框架对本地小模型不友好——要么太慢、要么吃 context。
 > 这个项目核心诉求就两条：**能选 think=false**（省时间省 token），**context 可控**（默认 65536）。
+
+## ✨ 亮点速览
+
+| | |
+|---|---|
+| 🪶 **零框架** | 核心只用 Python 标准库（urllib 直连 Ollama），Web UI 就是三个文件：`index.html / app.js / style.css`——没有 Node、没有打包器，clone 下来读得懂每一行 |
+| 🧰 **19 个内置工具** | Word / Excel / PPT / PDF 读写与渲染、shell 执行、grep/glob、图片理解、剪贴板截图（全局热键 Alt+V）、Bing+百度并行搜索、URL 阅读、todo、按需加载 skill |
+| 💬 **多会话并行** | 一条会话在生成，另开一条继续问；侧栏实时徽标（● 生成中 / ✦ 后台完成），刷新页面回合不死——前端靠事件快照重新接上 |
+| 🔁 **断流自愈** | 错误分类 + 指数退避自动重试，**半截输出保留**并从断点续写；空闲预算（120s）区分「模型在想」和「连接已死」；重复打转的工具有提醒 |
+| 🛡️ **危险动作有闸门** | 写文件 / 删文件 / 执行命令 / 联网，全部确认后才放行；删文件锁死在工作空间内，越界直接拒绝 |
+| 🖥️ **小模型友好** | think=false 省时间省 token；系统提示词极简（工具规则写在各工具描述里）；历史图片回合末剥离，KV cache 不膨胀 |
 
 ## 环境要求
 
