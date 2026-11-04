@@ -41,8 +41,11 @@ _JITTER = 0.1            # 对称抖动比例
 def classify_error(text: str) -> str:
     """从错误文本识别类别。识别不出按 FATAL 处理（宁可多报一次错，不可空转）。"""
     low = (text or "").lower()
-    # 限流：HTTP 429 / 各家措辞
-    if "429" in low or "rate limit" in low or "rate_limit" in low or "too many requests" in low:
+    # 限流：HTTP 429 / 各家措辞（中转站并发超限常写作 "Concurrency limit
+    # exceeded"——按账号算的瞬态限制，退避重试常可自愈）
+    if ("429" in low or "rate limit" in low or "rate_limit" in low
+            or "too many requests" in low or "concurrency" in low
+            or "并发超限" in low):
         return RATE_LIMIT
     # 服务端错误：API 错误 5xx / overloaded
     for marker in ("api 错误 50", "api 错误 52", "internal server", "overloaded", "bad gateway"):

@@ -14,7 +14,7 @@ from agent.config import SYSTEM_PROMPT, AgentConfig
 from agent.events import ConsoleEmitter
 from agent.registry import ToolContext, ToolResult
 from agent.repeat_guard import RepeatGuard
-from agent.retry import (RETRYABLE, backoff_delay, classify_error,
+from agent.retry import (RATE_LIMIT, RETRYABLE, backoff_delay, classify_error,
                          interruptible_sleep)
 from agent import timectx
 
@@ -376,7 +376,13 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                 history.append({"role": "assistant",
                                 "content": (content + "\n" + note) if content else note})
                 final_text = content
-                emitter.notice(f"[⚠ 回答中断：{err}] 已保留生成到的部分，可直接说「继续」")
+                # 限流/并发超限重试用尽才走到这里：给针对性建议，别让用户只会说「继续」
+                advice = ""
+                if classify_error(err) == RATE_LIMIT:
+                    advice = ("（账号限流/并发超限：等几秒再说「继续」通常即可恢复；"
+                              "若反复出现，可切换模型，或先让其他并行会话跑完）")
+                emitter.notice(f"[⚠ 回答中断：{err}] 已保留生成到的部分，"
+                               f"可直接说「继续」{advice}")
                 break
 
             assistant_msg: dict = {"role": "assistant", "content": content}

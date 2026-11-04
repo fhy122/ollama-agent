@@ -206,6 +206,31 @@ def test_run_turn_keeps_partial() -> None:
     print("PASS: run_turn 断流兜底（内容入历史 + 明确提示 + 不继续跑）")
 
 
+def test_run_turn_concurrency_limit() -> None:
+    """中转站并发超限：应归类限流自动退避重试；用尽后提示里给出换模型建议。"""
+    cfg = AgentConfig(use_color=False, warm=False)
+    ctx = ToolContext(use_color=False, workspace=Path("."))
+    em = _Emitter()
+    err = "API 错误 429: Concurrency limit exceeded for account, please retry later"
+    client = _StubClient({"content": "并发超限前已生成的一半",
+                          "tool_calls": [], "stats": {},
+                          "cancelled": False, "error": err})
+    history = [{"role": "system", "content": "sys"}]
+
+    out = run_turn(client, cfg, ctx, history, "x", emitter=em)
+
+    assert out == "并发超限前已生成的一半", out
+    # 分类为限流 → 自动退避重试（1 次首发 + stream_retries 次续写）
+    assert client.calls == 1 + cfg.stream_retries, client.calls
+    assert "并发超限前已生成的一半" in history[-1]["content"], history[-1]
+    notes = [v for k, v in em.events if k == "notice"]
+    final = notes[-1]
+    assert "回答中断" in str(final), notes
+    assert "切换模型" in str(final) and "等几秒" in str(final), \
+        f"限流收尾应给针对性建议，实际 {final}"
+    print("PASS: 并发超限自动重试 + 收尾建议（等几秒/切换模型）")
+
+
 def test_post_chat_first_byte_timeout() -> None:
     """首字节前超时：给一句能照着做的提示，而不是裸 TimeoutError。"""
 
