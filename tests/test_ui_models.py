@@ -24,6 +24,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -81,6 +82,8 @@ def _models_ui(page):
                                  .map(e => e.textContent.trim()) : [],
             customRows: cu ? cu.querySelectorAll('.model-row').length : 0,
             customNames: cu ? [...cu.querySelectorAll('.m-name')].map(e => e.textContent.trim()) : [],
+            customActive: cu ? [...cu.querySelectorAll('.model-row.on .m-name')]
+                                 .map(e => e.textContent.trim()) : [],
             customEmpty: cu ? (cu.querySelector('.sb-empty')?.textContent || '') : '',
             formOpen: !document.getElementById('model-form').classList.contains('hidden'),
           };
@@ -202,6 +205,40 @@ def main():
                 assert row["model"] == "vendor-model-x", row
                 assert disk.get("active") == row["id"], "新建后应自动切到它"
                 print(f"  ok  落盘 ok={row['name']} model={row['model']}")
+
+                # 5.5 选中互斥 + 切换反馈。曾出过的事故：内置区和自定义区
+                # 同时亮「使用中」（两区判据各看各的字段，/api/config 换协议
+                # 从不更新 active）——这里把「全面板至多一处高亮」钉死。
+                m = _models_ui(page)
+                assert len(m["customActive"]) == 1, \
+                    f"自定义生效时应有且仅有一处高亮: {m}"
+                assert m["builtinActive"] == [], \
+                    f"自定义生效时内置区不允许有高亮: {m}"
+                idle_tags = [t for t, n in zip(m["builtinTags"], m["builtinNames"])
+                             if n not in m["builtinActive"]]
+                assert idle_tags and all("切换" in t for t in idle_tags), \
+                    f"非选中内置行应有「切换」行动提示: {m}"
+
+                first_builtin = page.locator("#builtin-models .model-row").first
+                first_builtin.click()
+                page.wait_for_timeout(250)
+                sw = page.evaluate(
+                    """() => {
+                      const r = document.querySelector(
+                        '#builtin-models .model-row.switching .m-tag');
+                      return r ? r.textContent.trim() : '';
+                    }""")
+                assert "切换中" in sw, f"点击后应出现「切换中…」过渡态: {sw!r}"
+                # 切换 = 重建后端 + 本地模型加载，可能要几秒，轮询等高亮迁移
+                deadline = time.time() + 60
+                while time.time() < deadline:
+                    m = _models_ui(page)
+                    if m["builtinActive"] and not m["customActive"]:
+                        break
+                    page.wait_for_timeout(500)
+                else:
+                    raise AssertionError(f"切换后高亮应迁回内置且仅一处: {m}")
+                print(f"  ok  互斥 + 切换反馈（高亮迁到内置 {m['builtinActive'][0]}）")
 
                 # 6. 界面上不能出现完整 Key
                 blob = page.inner_text("#settings")

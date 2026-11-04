@@ -165,3 +165,36 @@ def test_provider_switch_via_session():
     # 显式清空
     s.update_config({"api_key": "__CLEAR__"})
     assert s.cfg.api_key == ""
+
+
+def test_switch_to_builtin_syncs_active(tmp_path):
+    """点内置模型走的是 /api/config（内置条目不是 profile），换协议那一刻
+    user_cfg["active"] 必须同步成内置 —— 不同步的实测后果：设置面板里
+    内置区和自定义区同时亮「使用中」，没人分得清哪个真在生效；
+    且 _sync_user_cfg 会把本地配置回写进还挂着的 openai profile，把它污染。
+    """
+    from agent.config import AgentConfig
+    from agent.userconfig import BUILTIN_ID, ConfigStore
+    from webui.session import AgentSession
+
+    cs = ConfigStore(tmp_path / "config.json")
+    cs.save({"active": "p-1", "profiles": [
+        {"id": "p-1", "name": "中转站", "provider": "openai",
+         "host": "https://relay.example/v1", "api_key": "sk-keep",
+         "model": "deepseek-x"}]})
+    s = AgentSession(AgentConfig(api_key=""), config_store=cs)
+    assert s.user_cfg["active"] == "p-1"
+    assert s.cfg.model == "deepseek-x"      # _restore_profile 灌回了中转站
+
+    # 用户点内置模型 qwen3.5:9b（前端 activateOllama 发的就是这个补丁）
+    s.update_config({"provider": "ollama", "host": "http://127.0.0.1:11434",
+                     "model": "qwen3.5:9b"})
+    assert s.user_cfg["active"] == BUILTIN_ID, s.user_cfg["active"]
+
+    # 配置文件里的 profile 不能被本地配置污染
+    disk = cs.load()
+    p = [x for x in disk["profiles"] if x["id"] == "p-1"][0]
+    assert p["provider"] == "openai", p
+    assert p["host"] == "https://relay.example/v1", p
+    assert p["api_key"] == "sk-keep", p
+    assert p["model"] == "deepseek-x", p

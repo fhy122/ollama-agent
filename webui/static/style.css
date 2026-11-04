@@ -1055,6 +1055,20 @@ details.think .body { font-family: inherit; font-size: 13px; }
   color: var(--ok); font-weight: 620;
   background: color-mix(in srgb, var(--ok) 13%, transparent);
 }
+/* 非选中行平时低调，hover 才显出「切换」行动提示：
+   整行可点这件事不该靠常驻文字解释，也不该靠猜 */
+.model-row .m-go {
+  opacity: 0; color: var(--accent); background: transparent;
+  transition: opacity var(--dur);
+}
+.model-row:hover .m-go { opacity: 1; }
+/* 切换请求进行中：锁交互防连点，胶囊让位给转圈，一眼看出「正在换」 */
+.model-row.switching { pointer-events: none; opacity: .78; }
+.model-row.switching .m-tag {
+  color: var(--muted); font-weight: 550; background: none;
+}
+.model-row .m-tag .spin { animation: mspin .8s linear infinite; }
+@keyframes mspin { to { transform: rotate(360deg); } }
 .model-row .m-edit { flex: 0 0 auto; width: 26px; height: 26px; opacity: .55; }
 .model-row:hover .m-edit { opacity: 1; }
 

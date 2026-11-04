@@ -793,7 +793,19 @@ class AgentSession:
             if "provider" in patch or "host" in patch or "api_key" in patch:
                 old_provider = self.client.name
                 if patch.get("provider") in ("auto", "ollama", "openai"):
+                    prev_resolved = self.cfg.resolved_provider
                     self.cfg.provider = patch["provider"]
+                    # 切回 ollama 协议 = 生效项变成「内置 Ollama」，active 必须跟上。
+                    # 前端点内置模型走的就是这条路（内置条目不是 profile，
+                    # 不能走 /api/models/activate）——不同步的话 user_cfg["active"]
+                    # 还指着旧中转站，界面上两区会同时亮「使用中」，
+                    # 没人分得清哪个真在生效。
+                    # 反方向（ollama→openai）不在这动 active：切自定义配置的
+                    # 正规入口（activate_profile / 删除回落）都会先设好它。
+                    if ("active" not in patch and prev_resolved != "ollama"
+                            and self.cfg.resolved_provider == "ollama"
+                            and isinstance(getattr(self, "user_cfg", None), dict)):
+                        self.user_cfg["active"] = BUILTIN_ID
                 if patch.get("host"):
                     self.cfg.host = str(patch["host"]).strip()
                 if "api_key" in patch:

@@ -1354,6 +1354,33 @@ const CHECK_SVG =
   '<path d="M4.5 12.5l5 5L19.5 7" fill="none" stroke="currentColor" ' +
   'stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
+// 非选中行的「切换」提示箭头：hover 才显形（CSS .m-go），告诉用户整行可点
+const SWAP_SVG =
+  '<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">' +
+  '<path d="M4 12h13M13 6l6 6-6 6" fill="none" stroke="currentColor" ' +
+  'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// 切换请求进行中的转圈：切换要重建后端实例（可能还要探测 /api/tags），
+// 不是瞬时操作，不给反馈就是「点了没反应」
+const SPIN_SVG =
+  '<svg class="spin" viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">' +
+  '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" ' +
+  'stroke-width="2.6" stroke-linecap="round" stroke-dasharray="40 14"/></svg>';
+
+// 给被点的行挂「切换中…」过渡态，返回还原函数（失败路径用；
+// 成功路径 loadModels 会整块重画，无需还原）
+function markSwitching(row) {
+  if (!row) return () => {};
+  row.classList.add("switching");
+  const tag = row.querySelector(".m-tag");
+  const old = tag ? tag.innerHTML : "";
+  if (tag) tag.innerHTML = SPIN_SVG + "切换中…";
+  return () => {
+    row.classList.remove("switching");
+    if (tag) tag.innerHTML = old;
+  };
+}
+
 // 模型配置清单（内置 Ollama + 自定义）。服务端返回的 Key 一律已打码，
 // 完整 Key 永远不下发到浏览器。
 async function loadModels() {
@@ -1388,12 +1415,14 @@ function renderBuiltin(b) {
     : "Ollama 在跑，但一个模型都没装：ollama pull <模型名>";
   note.title = "";
   box.innerHTML = models.map((m) => {
-    // Ollama 模型名本身就是模型配置；点一下即切过去（切到内置 = provider 变 ollama）
-    const on = state.config && state.config.provider === "ollama"
-      && state.config.model === m;
-    return `<button class="model-row${on ? " on" : ""}" data-ollama-model="${esc(m)}">` +
+    // 选中判据只用服务端下发的权威字段（b.active = cfg.active 是不是内置条目，
+    // b.model = 当前生效模型名），不要拿 state.config 自己猜——
+    // 两个判据各说各话，就会出现内置和自定义同时亮「使用中」的事故。
+    const on = !!(b.active && b.model === m);
+    return `<button class="model-row${on ? " on" : ""}" data-ollama-model="${esc(m)}"` +
+      ` title="点击切换到这个模型">` +
       `<span class="m-name">${esc(m)}</span>` +
-      `<span class="m-tag">${on ? CHECK_SVG + "使用中" : "Ollama"}</span></button>`;
+      `<span class="m-tag">${on ? CHECK_SVG + "使用中" : SWAP_SVG + "切换"}</span></button>`;
   }).join("");
 }
 
@@ -1413,7 +1442,7 @@ function renderCustom(rows, activeId) {
       `<span class="m-sub">${esc(p.model || "未填模型")} · ${where}</span>` +
       `<span class="m-sub">${esc(p.host || "未填地址")} · ${keyState}</span>` +
       `</button>` +
-      `<span class="m-tag">${on ? CHECK_SVG + "使用中" : ""}</span>` +
+      `<span class="m-tag">${on ? CHECK_SVG + "使用中" : SWAP_SVG + "切换"}</span>` +
       `<button class="icon-btn m-edit" data-edit="${esc(p.id)}" title="编辑">` +
       `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 20h4L20 8l-4-4L4 16v4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>` +
       `</button></div>`;
@@ -1573,18 +1602,20 @@ async function deleteModel() {
   }
 }
 
-async function activateModel(id) {
+async function activateModel(id, row) {
+  const unmark = markSwitching(row);
   try {
     await api("/api/models/activate", { id });
     await loadModels();
     await loadConfig();
     toast("已切换模型配置");
   } catch (e) {
+    unmark();
     toast("切换失败：" + e.message, true);
   }
 }
 
-async function activateOllama(name) {
+async function activateOllama(name, row) {
   // 点内置模型 = 把当前配置切到 Ollama 原生协议 + 这个模型名。
   // 走 /api/config 而不是 profile：内置条目不落盘成 profile（模型列表是实时的）
   const cur = (state.models && state.models.profiles || []).find(
@@ -1592,12 +1623,14 @@ async function activateOllama(name) {
   const host = (cur && cur.provider === "ollama" && cur.host)
     || (state.config && state.config.provider === "ollama" && state.config.host)
     || "http://localhost:11434";
+  const unmark = markSwitching(row);
   try {
     await api("/api/config", { provider: "ollama", host, model: name });
     await loadConfig();
     await loadModels();
     toast("已切换到本地模型：" + name);
   } catch (e) {
+    unmark();
     toast("切换失败：" + e.message, true);
   }
 }
@@ -1857,12 +1890,12 @@ document.addEventListener("click", (e) => {
   }
   const actBtn = t.closest("[data-activate]");
   if (actBtn) {
-    activateModel(actBtn.dataset.activate);
+    activateModel(actBtn.dataset.activate, actBtn.closest(".model-row"));
     return;
   }
   const ollamaBtn = t.closest("[data-ollama-model]");
   if (ollamaBtn) {
-    activateOllama(ollamaBtn.dataset.ollamaModel);
+    activateOllama(ollamaBtn.dataset.ollamaModel, ollamaBtn.closest(".model-row"));
     return;
   }
 
