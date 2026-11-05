@@ -677,7 +677,40 @@ socket 超时语义是「两块数据之间的间隔」而非总时长：默认�
 
 **spill：工具输出落盘。** 工具结果超过 `spill_max_chars`（默认 12000，0=关）时全文写入
 `{工作空间}/.ollama-agent/spill/`，上下文里只留头尾摘要 + 取回指引——几千行的 grep/命令输出不再一次性撑爆 context，
-模型需要时再用 read_file 取回全文（`read_file`/`read_long_doc`/`skill` 的输出豁免，避免套娃）。
+模型需要时再用 read_file 取回全文（`read_file`/`read_long_doc` 的输出豁免，避免套娃；
+`skill` 正文不再豁免，超预算同样落盘；请求视图另有同名同正文去重）。
+
+**请求视图投影（context_view）。** 遵循 DeepSeek Harness「模型可见 ⟺ 已记录」：落盘 history 是只追加的会话日志，
+省 token 的折叠只发生在发请求前的派生视图里，日志一字不改、仍可回放。三条规则：
+① 同名同正文的 `skill` 结果只保留第一份，后续换成「已加载 + 不要重复调用」的短提示；
+去重指纹会忽略 spill 预览里带时间戳/序号的落盘路径（保留「省略 N 字节」，长度不同的正文仍不误折叠），
+预览场景的折叠文案另给 `read_file` 取回全文的指路；
+② 用户重发同一条指令、且上一轮被打断且零产出时，从轮次边界跳过整段失败探索
+（有 `[已写入]` / `exit 0` 等成果就不折叠，宁可多花 token 也不丢上下文）；
+③ `write_file` / `edit_file` 的超大文本参数在请求里只留摘要 + `read_file` 取回指引，
+阈值 `tool_call_arg_max_chars` 默认 2000（0=关）。
+**长会话压缩（compaction）。** 参考 DeepSeek Harness `packages/compaction/*`：每个模型请求前做压力检查，
+视图估算超过 `floor(min(num_ctx × compaction_threshold_ratio, num_ctx − O − B))` 时（默认 0.8 / O=2048 / B=8192），
+从尾部按 `(num_ctx−O) × compaction_retain_ratio`（默认 0.16）累加保留预算，把更旧的一段折叠成
+一条带 `<compacted-summary>` 的八段检查点。切点会向更旧方向回退到 `assistant.tool_calls ↔ tool` **配对平衡**边界
+（拆不开就放弃压缩），`system` 头永不进入被压缩范围；替换物必须比被遮蔽内容小，否则不压。
+检查点以**只追加**方式写进 history 并携带 `shadowed_until` 等元数据，旧消息一条不删、日志可完整回放；
+请求视图据此跳过被遮蔽的前缀（`surfaceOp.replace` 的等价实现），会话存盘/恢复后结果一致。
+
+摘要默认 `compaction_summarizer=local`：本地确定性八段提取（用户原话、文件路径、工具名、错误串、最近结论），
+**零额外模型请求、同一输入恒定同一输出**；设 `compaction_summarizer=llm` 才另发一次摘要请求（prompt 原样取自
+Harness `summarizer.ts:32-67`），失败自动降级为本地摘要。token 估算沿用 Harness 的 4 字符/token + 块/角色开销，
+并按本项目真实账单把 CJK 校准为 2 字符/token（纯 4 字符会让中文压缩晚触发好几步）。
+`compaction_enabled=False` 可整体关闭；单回合最多压 `compaction_retries` 次（默认 1）。
+任何一步不满足条件都静默跳过，绝不因为压缩打断本轮。检查点文案会明确告诉模型「原文已不在上下文里，
+文件类用 `read_file` 重读、命令/网页类需重新调用工具」，避免它假装看过。
+
+`spill` 管工具**结果**，投影管**历史与调用参数**，compaction 管**旧轮次整体**，三者分层；
+折叠规则确定性执行，请求前缀不会每步漂移。
+
+> 验证 A/B 用量时 `num_ctx` 必须大于被测 prompt：本地 Ollama 会**静默截断**超窗的最早内容，
+> `prompt_eval_count` 因此停在窗口附近，把两组差异吃掉（实测 16384 窗口下 17941 与 9091 tokens
+> 分别被报成 8983 与 9095；改到 65536 才显出真实差距）。
 
 **time-context：时间读数注入。** 多步工具循环里模型不知道自己走了多久。从第 2 步起在请求消息里注入
 「[时间上下文] 第 N 步请求采样：… 距基准已过去 X 分 Y 秒」（只在请求时拼入，不写入持久历史；600s 刷新基准），
@@ -710,6 +743,8 @@ ollama-agent/
 │   ├── retry.py           #   断流重试（错误分类 + 退避抖动 + 可中断睡眠）
 │   ├── repeat_guard.py    #   重复工具调用提醒（阈值注入，不否决）
 │   ├── spill.py           #   工具输出超限落盘 + 可取回预览（挂在 dispatch 总漏斗）
+│   ├── context_view.py    #   请求视图投影：技能正文去重 / 打断轮折叠 / 大参数摘要（不改日志）
+│   ├── compaction.py      #   长会话压缩：压力检查 / 尾部预算 / 配对边界 / 八段检查点 / 只追加日志
 │   ├── timectx.py         #   时间读数注入（请求时拼入，不入持久历史）
 │   ├── loop.py            #   Agent 主循环（多步工具调用、历史图片剥离、重试/提醒/时间注入挂钩）
 │   ├── console.py         #   输出/着色/行缓冲

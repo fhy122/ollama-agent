@@ -52,9 +52,24 @@ def test_oversize_spills_with_recoverable_full_text(tmp_path):
 def test_excluded_tool_untouched(tmp_path):
     """read_file 等豁免工具不 spill（防递归：读 spill 文件本身不能被再 spill）。"""
     text = "x" * 500
-    for name in ("read_file", "read_long_doc", "skill"):
+    for name in ("read_file", "read_long_doc"):
         assert spill.spill_if_oversize(name, text, tmp_path, MAXC) == text
     assert not list(tmp_path.glob("*.txt"))
+
+
+def test_skill_result_spills_when_oversize(tmp_path):
+    """技能正文不再豁免：超预算落盘，预览仍带技能名与取回指引。
+
+    错误路径要能指路：模型看完预览得知道「这是哪个技能」以及
+    「怎么拿回全文」，否则折叠/落盘就变成静默丢信息。
+    """
+    text = "[技能: big]\n" + "正文" * 300
+    out = spill.spill_if_oversize("skill", text, tmp_path, MAXC)
+
+    assert out.startswith("[技能: big]"), "预览头部要保留技能标识"
+    assert "完整结果已存至" in out and "read_file" in out and "grep_file" in out
+    files = list(tmp_path.glob("skill-*.txt"))
+    assert len(files) == 1 and files[0].read_text(encoding="utf-8") == text
 
 
 def test_idempotent_on_existing_notice(tmp_path):

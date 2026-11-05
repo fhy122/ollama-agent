@@ -53,6 +53,9 @@ ollama-agent/
 │  ├─ config.py               默认值 + SYSTEM_PROMPT + AgentConfig（全局唯一配置对象）
 │  ├─ registry.py             工具抽象 Tool / ToolContext / ToolResult + 全局注册表 + @tool
 │  ├─ loop.py                 run_turn：一次用户回合的全部编排（唯一编排点）
+│  ├─ context_view.py         请求视图投影：技能去重 / 打断轮折叠 / 大参数摘要（只改派生视图，不改日志）
+│  ├─ compaction.py          长会话压缩：压力检查 / 尾部预算 / 工具配对边界 / 八段 checkpoint / 只追加日志
+│  ├─ spill.py               工具结果超限落盘（与 compaction 各自的剪枝分层，先于摘要）
 │  ├─ client.py               兼容门面，re-export agent/backends/（老代码的 import 路径）
 │  ├─ backends/               ★ 协议实现：base.py 协议无关部分 + ollama.py + openai_compat.py
 │  ├─ providers.py            两种协议的 URL 拼装（/api/* 与 /v1/*）
@@ -148,11 +151,15 @@ ollama-agent/
 
 **内核四件（决定 agent 行为，必读）**
 
+> 「行」列是文件行数快照，随时以 `wc -l` 为准。
+
 | 文件 | 行 | 关键符号 | 具体做什么 | 被谁用 |
 |---|---|---|---|---|
-| `agent/config.py` | 74 | `SYSTEM_PROMPT`、`THINK_VALUES`、`MAX_CTX`、`AgentConfig` | 默认模型 `qwen3.5:9b`、默认 ctx 65536（上限 1048576）、12 步上限；系统提示词 8 条规则 | 所有模块 |
+| `agent/config.py` | 90 | `SYSTEM_PROMPT`、`THINK_VALUES`、`MAX_CTX`、`AgentConfig` | 默认模型 `qwen3.5:9b`、默认 ctx 65536（上限 1048576）、12 步上限；系统提示词 8 条规则；投影阈值与 compaction 全部参数 | 所有模块 |
 | `agent/registry.py` | 117 | `ToolResult`、`ToolContext.resolve/approve`、`Tool.run/spec`、`@tool`、`dispatch` | 工具契约 + 全局注册表；`resolve()` 定义"相对路径锚定工作空间" | loop、所有 tools |
-| `agent/loop.py` | 164 | `new_history`、`run_turn`、`strip_old_images`、`pad_unanswered_tool_calls` | 拼系统提示 + 技能索引；跑最多 `max_steps` 步"模型↔工具"循环 | cli、webui.session |
+| `agent/loop.py` | 492 | `new_history`、`run_turn`、`strip_old_images`、`pad_unanswered_tool_calls` | 拼系统提示 + 技能索引；跑最多 `max_steps` 步"模型↔工具"循环，每次请求前经 `context_view` 投影并做 compaction 压力检查 | cli、webui.session |
+| `agent/context_view.py` | 216 | `project_messages`、`_skill_fingerprint`、`dedup_skill_bodies`、`collapse_aborted_turn`、`slim_tool_call_args` | 请求视图投影：先应用 checkpoint 与下标位移，再做技能正文去重（spill 落盘路径归一化）、打断轮折叠、工具大参数摘要；只改派生视图，不动落盘日志 | loop |
+| `agent/compaction.py` | 420 | `compact_if_needed`、`select_compactable_range`、`apply_checkpoints`、`build_local_summary`、`make_llm_summarizer` | 长会话滚动压缩：token 压力估算（CJK 校准）、尾部预算切分、工具配对边界回退、八段 checkpoint、必须变短校验、失败降级；旧消息只追加不删 | loop、context_view |
 | `agent/backends/base.py` | 449 | `ChatClient`、`StreamParser`、`error_text` | 协议无关部分：连接/中断/流读取/重试；能力标记 `supports_*` 默认 False | 两个具体后端 |
 | `agent/backends/ollama.py` | 132 | `OllamaClient`、`OllamaStreamParser` | `/api/chat` 原生协议；整行 JSON + `done` 帧；四项能力全 True | 工厂 |
 | `agent/backends/openai_compat.py` | 158 | `OpenAICompatClient`、`OpenAIStreamParser` | `/v1/chat/completions`；SSE + `[DONE]`；tool_call 参数分片累积；能力全 False | 工厂 |

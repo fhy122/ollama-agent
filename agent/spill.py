@@ -15,8 +15,10 @@ from pathlib import Path
 
 from agent import HIDDEN_DIRNAME
 
-# 读/列类工具自带分页与上限，且要读 spill 文件本身——豁免。
-EXCLUDE = frozenset({"read_file", "read_long_doc", "skill"})
+# 读/列类工具自带分页与上限，且要读 spill 文件本身——豁免（防递归）。
+# skill 正文不再豁免：技能文档同样可能上万字，超预算就该落盘。
+# 请求视图里的「同名同正文去重」由 agent/context_view.py 负责，两件事分层。
+EXCLUDE = frozenset({"read_file", "read_long_doc"})
 
 SPILLS_DIRNAME = Path(HIDDEN_DIRNAME) / "spills"
 

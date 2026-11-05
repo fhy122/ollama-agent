@@ -11,6 +11,8 @@ import time
 from agent.backends import ChatClient
 from agent import longdoc
 from agent.config import SYSTEM_PROMPT, AgentConfig
+from agent import context_view
+from agent import compaction
 from agent.events import ConsoleEmitter
 from agent.registry import ToolContext, ToolResult
 from agent.repeat_guard import RepeatGuard
@@ -97,7 +99,10 @@ def _delegate_to_expert(client, cfg, ctx, history, emitter, user_text) -> None:
     emitter.notice("[按你的要求，把任务交给外脑；拿到回答后继续本地工作]")
     question = ""
     try:
-        probe = history + [{"role": "user", "content": _ASK_QUESTION}]
+        # 走同一份请求视图：否则长会话压缩/技能去重省下的 token 会在
+        # 这个「旁路子请求」里被全量重发回去。
+        probe = context_view.project_messages(history, cfg=cfg) + [
+            {"role": "user", "content": _ASK_QUESTION}]
         resp = client.chat(probe, tools=None, on_think=emitter.think)
         question = (resp.get("content") or "").strip()
     except Exception:
@@ -206,10 +211,17 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                     user_text, ctx.workspace, cfg.num_ctx)}
     if images:
         user_msg["images"] = images
+    turn_start = len(history)          # 本轮 user 消息下标 = 请求视图的轮次边界
     history.append(user_msg)
     turn_start_ts = time.time()     # 时间读数的第 1 步基准（用户消息时刻）
 
     tools_spec = None if cfg.no_tools else tools.all_specs()
+    # 长会话压缩（DSH agent/pre-step 的等价点）：每步请求前做压力检查。
+    # 默认本地确定性摘要零额外请求；llm 模式另发一次摘要请求，失败自动降级。
+    summarize_fn = (compaction.make_llm_summarizer(client, cfg, cancel=cancel)
+                    if getattr(cfg, "compaction_summarizer", "local") == "llm"
+                    else None)
+    compacted_this_turn = 0
     want_expert = _expert_available() and expert_requested(user_text)  # 用户点名要用外脑
     expert_done = False                         # 本回合是否已经问过外脑
     final_text = ""
@@ -283,7 +295,27 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                 last_inject_ts = now_ts
             retry_no = 0
             while True:
-                req_messages = history + [time_msg] if time_msg else history
+                # 请求视图投影（参考 DSH「模型可见 ⟺ 已记录」）：折叠只发生在
+                # 派生视图里，落盘 history 一行不改。放在 while 内是必须的——
+                # 半截断流会把续写指令追加进 history，每次尝试都得重算快照。
+                view = context_view.project_messages(history, user_text=user_text,
+                                                     turn_start=turn_start, cfg=cfg)
+                # 压缩只在请求视图超阈值时发生；checkpoint 以「只追加」方式写进
+                # 日志（旧消息一条不删），随后重算视图。失败/不够短/超次数一律
+                # 静默跳过，绝不因为压缩打断本轮（DSH index.ts:165-172）。
+                ckpt = compaction.compact_if_needed(
+                    history, cfg, view=view, summarize_fn=summarize_fn,
+                    compacted_this_turn=compacted_this_turn)
+                if ckpt:
+                    history.append(ckpt)
+                    compacted_this_turn += 1
+                    view = context_view.project_messages(
+                        history, user_text=user_text, turn_start=turn_start, cfg=cfg)
+                    emitter.notice(
+                        f"[长会话压缩] {ckpt['shadowed_messages']} 条旧消息"
+                        f"（约 {ckpt['shadowed_tokens']} tokens）已折叠为 1 条检查点；"
+                        "原始记录仍在会话日志，可完整回放。")
+                req_messages = view + [time_msg] if time_msg else view
                 try:
                     resp = client.chat(
                         req_messages,

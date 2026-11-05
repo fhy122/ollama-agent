@@ -58,6 +58,16 @@ class AgentConfig:
     max_steps: int = MAX_TOOL_STEPS
     stream_retries: int = DEFAULT_MAX_RETRIES   # 断流/超时自动重试次数上限（0 = 关闭，行为同旧版）
     spill_max_chars: int = 12000        # 工具结果超此字符数→全文落盘+预览（0 = 关闭）
+    tool_call_arg_max_chars: int = 2000  # 请求视图里工具调用大文本参数上限（0 = 关闭；只改视图不改日志）
+    # ---- 长会话压缩（参考 DeepSeek Harness compaction-basic，阈值一律可配）----
+    compaction_enabled: bool = True            # 关掉即完全不压缩，行为同旧版
+    compaction_threshold_ratio: float = 0.8   # 触发阈值 = min(num_ctx*ratio, num_ctx-O-headroom)
+    compaction_headroom_tokens: int = 8192    # 给后续工具结果/回答留的余量 B
+    compaction_reserved_completion_tokens: int = 2048  # 输出预留 O
+    compaction_retain_ratio: float = 0.16     # 从尾部逐字保留的预算 = (num_ctx-O)*ratio
+    compaction_retries: int = 1               # 单回合最多压缩几次（防每步反复压）
+    compaction_summarizer: str = "local"      # local=确定性本地摘要(零额外请求) | llm=另发一次摘要请求
+    compaction_summary_max_chars: int = 6000  # 本地摘要长度上限
     time_context: bool = True           # 每次请求注入时间读数（帮模型理解「今天/等了多久」）
     time_refresh_sec: int = 600         # 时间读数刷新间隔；0 = 每步都注入
     confirm: bool = False              # True 时写/改/删文件、跑命令、联网前需人工确认
