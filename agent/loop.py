@@ -18,7 +18,7 @@ from agent.registry import ToolContext, ToolResult
 from agent.repeat_guard import RepeatGuard
 from agent.retry import (LIMITED, RATE_LIMIT, RETRYABLE, backoff_delay,
                          classify_error, interruptible_sleep)
-from agent import timectx
+from agent import timectx, usage
 
 import tools
 
@@ -103,7 +103,8 @@ def _delegate_to_expert(client, cfg, ctx, history, emitter, user_text) -> None:
         # 这个「旁路子请求」里被全量重发回去。
         probe = context_view.project_messages(history, cfg=cfg) + [
             {"role": "user", "content": _ASK_QUESTION}]
-        resp = client.chat(probe, tools=None, on_think=emitter.think)
+        with usage.scope(client, "delegate"):
+            resp = client.chat(probe, tools=None, on_think=emitter.think)
         question = (resp.get("content") or "").strip()
     except Exception:
         question = ""
@@ -191,6 +192,11 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
         emitter = ConsoleEmitter(cfg)
 
     _stats = _stats_with_step(emitter)      # 兼容老签名的 stats(st)
+
+    # 回合级用量：账本挂在 client 上，ChatClient.chat 逐次记账；这里只记下
+    # 起点，收尾时（finally，覆盖正常/打断/异常所有出口）取增量发一条事件。
+    _ledger = getattr(client, "usage_ledger", None)
+    usage_before = _ledger.snapshot() if _ledger is not None else None
 
     # 需要自己发子请求的工具（read_long_doc 逐段精读）从 ctx 拿运行时依赖。
     # 在这里统一注入，而不是各前端各写一遍：多一处遗漏就是一处「工具静默失效」。
@@ -486,6 +492,15 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
         return resp.get("content") or ""
     finally:
         _close_step()      # 最后一步的结束时刻：任何出口都要闭合时间窗
+        if _ledger is not None:
+            _fn = getattr(emitter, "usage", None)
+            if _fn:
+                try:
+                    _delta = _ledger.delta(usage_before)
+                    if _delta["requests"]:
+                        _fn(_delta, _ledger.snapshot())
+                except Exception:
+                    pass      # 统计链路出错绝不能影响回结果
 
     # 这里不再补报统计：每一轮 chat 之后都已经按步发过了（见上面循环里的
     # emitter.stats(_stats, step=step)）。留着这里只会把最后一步的耗时打印两遍。

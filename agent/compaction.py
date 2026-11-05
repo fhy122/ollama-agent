@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+
+from agent import usage
 from typing import Callable
 
 # ---- token-meter 的固定启发式（estimate.ts:13-19）----
@@ -413,7 +415,8 @@ def make_llm_summarizer(client, cfg, cancel=None):
                 msgs.append({"role": m["role"],
                              "content": m.get("content") or "(tool call)"})
         msgs.append({"role": "user", "content": COMPACTION_INSTRUCTION})
-        resp = client.chat(msgs, tools=None, cancel=cancel)
+        with usage.scope(client, "compaction"):
+            resp = client.chat(msgs, tools=None, cancel=cancel)
         if resp.get("error"):
             raise RuntimeError(str(resp["error"])[:120])
         return (resp.get("content") or "").strip()

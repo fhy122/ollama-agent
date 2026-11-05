@@ -155,7 +155,9 @@ python ollama_agent.py --ui          # 同上（--port 同样可用）
 **会话存在哪：** 一条对话一个 JSON，默认 `~/.ollama-agent/sessions/<id>.json`（`OLLAMA_AGENT_SESSIONS`
 可改目录，测试靠它隔离）。文件里同时存两份东西：`history` 是喂给模型的完整上下文，`turns` 是
 界面回放用的流式事件（文字 / 思考 / 工具调用 / 工具结果 / 用量），所以切回旧对话能原样还原
-工具卡片和代码块，不是只剩纯文本。工作空间文件列表在左侧栏底部（点击可预览，`刷新`重扫）；
+工具卡片和代码块，不是只剩纯文本。顶层 `usage` 是会话级累计用量账本（含重试与子请求），
+老文件没有这个字段就显示为空账本，**不拿旧 stats 事件回填** —— 那种事件本就漏了重试，
+回填只会把不完整的旧口径伪装成完整账单。工作空间文件列表在左侧栏底部（点击可预览，`刷新`重扫）；
 没有任何提问的空会话不列进历史；工作空间换了会新开一条对话，旧对话照样留在列表里。
 
 **模型配置接口：** `GET /api/models`（内置模型清单 + 自定义配置列表，Key 一律打码）、
@@ -712,6 +714,20 @@ Harness `summarizer.ts:32-67`），失败自动降级为本地摘要。token 估
 > `prompt_eval_count` 因此停在窗口附近，把两组差异吃掉（实测 16384 窗口下 17941 与 9091 tokens
 > 分别被报成 8983 与 9095；改到 65536 才显出真实差距）。
 
+**累计 usage 统计口径。** 以前只有「每步一条 `stats` 事件」，而重试循环只上报最后一次
+`resp`，warmup、`read_long_doc` 逐段子请求、compaction LLM 摘要、外脑委派写问题都不经过 emitter ——
+账单式数字只是成功那些步的**下限**。现在 `agent/usage.py` 的账本挂在 client 上，
+`ChatClient.chat` 统一埋点，每一次真实请求都进账；`run_turn` 收尾发一条 `usage` 事件
+（本回合增量 + 会话累计），CLI 打印、WebUI 追加一行，会话 JSON 顶层落 `usage` 字段，恢复时原样读回。
+
+口径硬规则：**只累加后端真实返回的 `prompt_eval_count` / `eval_count`**；后端没给 usage 的请求
+（连接失败、断流、云中转站不下发）只记「调用次数 + 缺失计数 + 失败计数」，并在文案里标注
+「N 次未返回 usage（未计入）」，**绝不用字符估算补 token**。`by_source` 把 chat / longdoc /
+compaction / delegate / warmup 分开，便于定位消耗大头。逐次的 `stats` 与回合级 `usage`
+是两个口径，别混着读。已知边界：HTTP 层 `_retry_on_known_error` 的内部重发不走 `chat()`、
+OpenAI 流式请求未带 `stream_options.include_usage`（部分中转站因此不下发 usage）、
+cached tokens 未解析 —— 这些仍会让数字偏小，但会以「缺失次数」显式暴露，不再静默漏掉。
+
 **time-context：时间读数注入。** 多步工具循环里模型不知道自己走了多久。从第 2 步起在请求消息里注入
 「[时间上下文] 第 N 步请求采样：… 距基准已过去 X 分 Y 秒」（只在请求时拼入，不写入持久历史；600s 刷新基准），
 模型能据此决定还值不值得继续磨。
@@ -745,6 +761,7 @@ ollama-agent/
 │   ├── spill.py           #   工具输出超限落盘 + 可取回预览（挂在 dispatch 总漏斗）
 │   ├── context_view.py    #   请求视图投影：技能正文去重 / 打断轮折叠 / 大参数摘要（不改日志）
 │   ├── compaction.py      #   长会话压缩：压力检查 / 尾部预算 / 配对边界 / 八段检查点 / 只追加日志
+│   ├── usage.py           #   会话级累计账本：chat 统一埋点 / 缺失 usage 不编造 / 按来源分类
 │   ├── timectx.py         #   时间读数注入（请求时拼入，不入持久历史）
 │   ├── loop.py            #   Agent 主循环（多步工具调用、历史图片剥离、重试/提醒/时间注入挂钩）
 │   ├── console.py         #   输出/着色/行缓冲
@@ -815,6 +832,7 @@ python tests/test_ui_reset.py         # 清空/删除对话（Playwright，需�
 python tests/test_stream_retry.py     # 断流分类 + 退避重试 + 半截输出续写（假客户端，离线）
 python tests/test_repeat_guard.py     # 重复工具调用提醒（键序无关/阈值/注入时机）
 python tests/test_spill.py            # 工具输出落盘（超限截断/豁免清单/取回预览）
+python tests/test_usage.py            # 累计用量口径（重试/子请求计入、缺失不编造、会话存盘恢复）
 python tests/test_todo.py             # 任务清单工具（三态/单活跃/持久化）
 python tests/test_time_context.py     # 时间读数注入（第2步起/刷新基准/不入历史）
 python tests/test_steer.py            # 生成中注入（步边界消费/idle 409/用户身份入历史）

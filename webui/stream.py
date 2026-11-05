@@ -8,6 +8,7 @@
   {"type":"tool_result","name":"read_file","text":"...","dt":1.2,"images":[...]?}
   {"type":"confirm","id":"c1","question":"write_file({\"path\":...})"}
   {"type":"stats","prompt_tokens":..,"gen_tokens":..,"duration":..,"step":1}
+  {"type":"usage","turn":{累计增量},"total":{会话累计}}
   {"type":"thinking","elapsed":12.0,"chars":0}
   {"type":"notice","text":"..."}
 """
@@ -108,6 +109,10 @@ class StreamEmitter:
             "gen_tokens": st.get("eval_count"),
             "duration": round((st.get("total_duration") or 0) / 1e9, 2),
         })
+
+    def usage(self, turn: dict, total: dict) -> None:
+        """回合收尾：本回合增量 + 会话累计（与逐次 stats 是两个口径）。"""
+        self._send({"type": "usage", "turn": turn, "total": total})
 
     def thinking(self, elapsed: float, chars: int = 0) -> None:
         """生成参数期间的逐秒心跳（长 tool_call 执行前唯一的可见反馈）。

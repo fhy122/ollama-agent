@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent import docparse, notebook
+from agent import docparse, notebook, usage
 
 # 中文按最坏情况 1 字 = 1 token（千问/多数中文 tokenizer 实际约 1.5 字/token）
 CHARS_PER_TOKEN = 1.0
@@ -247,7 +247,9 @@ def _clean(text: str) -> str:
 
 def _ask(client, prompt: str, cancel=None) -> str:
     """发一条独立的子请求（不挂工具，避免模型在记笔记时去调工具）。"""
-    resp = client.chat([{"role": "user", "content": prompt}], tools=None, cancel=cancel)
+    with usage.scope(client, "longdoc"):
+        resp = client.chat([{"role": "user", "content": prompt}],
+                           tools=None, cancel=cancel)
     if resp.get("cancelled"):
         raise _Cancelled()
     if resp.get("error"):

@@ -118,6 +118,20 @@ def main():
                 assert "第 2 步" in last, f"多步回合的统计要标第几步: {last!r}"
                 assert "95" in last and "13652" in last, last
 
+                # 5b) 累计 usage 行：本回合增量 + 会话累计 + 缺失标注
+                page.evaluate("""() => {
+                  applyEvent(window.__t, {type:'usage',
+                    turn:{requests:3, prompt_tokens:2000, gen_tokens:200,
+                          total_tokens:2200, missing_usage:1, by_source:{}},
+                    total:{requests:9, prompt_tokens:9000, gen_tokens:900,
+                           total_tokens:9900}});
+                }""")
+                st = _snap(page)
+                last = st["metas"][-1]
+                assert "本回合累计 3 次调用" in last, last
+                assert "2200" in last and "9900" in last, last
+                assert "1 次未返回 usage" in last, last
+
                 # 6) 回合结束：有残留等待条也必须清掉
                 page.evaluate("applyEvent(window.__t, {type:'thinking', elapsed:3, chars:0})")
                 page.evaluate("window.__t.finalize()")
@@ -125,7 +139,7 @@ def main():
                 assert st["n"] == 0, f"回合结束后不该还挂着等待条: {st}"
 
                 assert not errors, errors
-                print("PASS: 心跳提示条出现/就地更新/字符数递增 + 真实事件收掉 + stats 标第 N 步 + 收尾清理")
+                print("PASS: 心跳提示条 + stats 标第 N 步 + 累计 usage 行 + 收尾清理")
             finally:
                 browser.close()
     finally:

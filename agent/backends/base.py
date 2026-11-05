@@ -23,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from agent import user_agent
+from agent import usage, user_agent
 from agent.console import color
 
 # 心跳间隔（秒）。要足够小才显得「活着」，又不能太密把流刷爆。
@@ -370,6 +370,38 @@ class ChatClient:
     def chat(self, messages: list, tools: list | None = None,
              on_text=None, on_think=None, cancel=None,
              on_wait=None, think_hidden: bool = True) -> dict:
+        """统一 usage 埋点：每一次真实发出的请求都进会话账本。
+
+        放在 ChatClient 这一层，主循环的重试、warmup、read_long_doc 逐段子请求、
+        compaction LLM 摘要、外脑委派写问题就都自动计入，调用点不用逐个补统计。
+        失败/无 usage 的请求记「调用次数 + 缺失」，绝不估算 token。
+        统计链路出任何异常都吞掉，绝不影响对话本身。
+        """
+        sink = getattr(self, "usage_sink", None)
+        try:
+            result = self._chat(messages, tools=tools, on_text=on_text,
+                                on_think=on_think, cancel=cancel,
+                                on_wait=on_wait, think_hidden=think_hidden)
+        except Exception:
+            self._report_usage(None, ok=False, sink=sink)
+            raise
+        st = result.get("stats") if isinstance(result, dict) else None
+        err = result.get("error") if isinstance(result, dict) else None
+        self._report_usage(st, ok=not err, sink=sink)
+        return result
+
+    def _report_usage(self, stats: dict | None, ok: bool, sink) -> None:
+        if not sink:
+            return
+        try:
+            sink(stats, source=getattr(self, "usage_scope", "chat") or "chat",
+                 ok=ok)
+        except Exception:
+            pass
+
+    def _chat(self, messages: list, tools: list | None = None,
+              on_text=None, on_think=None, cancel=None,
+              on_wait=None, think_hidden: bool = True) -> dict:
         """发起一轮对话 → {"thinking","content","tool_calls","stats","cancelled","error"}
 
         cancel: 可选 threading.Event；置位后中断流式读取并关闭连接，
@@ -624,7 +656,8 @@ class ChatClient:
         """发一条最小消息把模型载入内存，避免用户第一回合干等加载。返回耗时秒。"""
         import time
         t0 = time.time()
-        self.chat([{"role": "user", "content": "say hello"}], tools=None)
+        with usage.scope(self, "warmup"):
+            self.chat([{"role": "user", "content": "say hello"}], tools=None)
         return time.time() - t0
 
 

@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 
+from agent import usage
 from agent.backends import create_client
 from agent.config import DEFAULT_HOST, DEFAULT_MODEL, MAX_CTX, THINK_VALUES, AgentConfig
 from agent.loop import new_history, run_turn
@@ -154,6 +155,13 @@ class RecordingEmitter:
                         "duration": round((st.get("total_duration") or 0) / 1e9, 2)})
         self._inner.stats(st, step)
 
+    def usage(self, turn: dict, total: dict) -> None:
+        """累计用量记进回放事件；老 emitter 没实现 usage 也不影响对话。"""
+        self._push({"type": "usage", "turn": turn, "total": total})
+        inner = getattr(self._inner, "usage", None)
+        if inner:
+            inner(turn, total)
+
     def thinking(self, elapsed: float, chars: int = 0) -> None:
         """生成参数期间的心跳：**只转发、不记录**。
 
@@ -268,6 +276,10 @@ class AgentSession:
             self._restore_profile()
 
         self.client = create_client(cfg)
+        # 会话级累计账本：挂在 client 上，所有 client.chat（含重试、warmup、
+        # 长文精读子请求、LLM 摘要、外脑写问题）自动进账。
+        self.usage = usage.UsageLedger()
+        usage.UsageLedger.attach(self.client, self.usage)
         self.workspace = Path(cfg.workspace) if cfg.workspace else Path.cwd()
         self.workspace.mkdir(parents=True, exist_ok=True)
         # 安全口默认开：写/删/联网工具执行前人工确认（设置面板可关）。
@@ -565,6 +577,10 @@ class AgentSession:
         self.turns = list(data.get("turns") or [])
         hist = data.get("history")
         self.history = hist if isinstance(hist, list) and hist else new_history(str(self.workspace))
+        # 老会话没有 usage 字段 → 空账本。刻意不从 turns 里的旧 stats 求和回填：
+        # 那些事件本就漏了重试/子请求，回填只会把不完整的旧口径伪装成完整账单。
+        self.usage = usage.UsageLedger.from_dict(data.get("usage"))
+        usage.UsageLedger.attach(self.client, self.usage)
 
     def _save(self) -> None:
         if not self.sid:
@@ -579,6 +595,7 @@ class AgentSession:
                 "model": self.cfg.model,
                 "history": self.history,
                 "turns": self.turns,
+                "usage": self.usage.snapshot(),
             })
         except Exception:
             pass      # 落盘失败不能把回合结果吐掉
@@ -596,7 +613,8 @@ class AgentSession:
     def current(self) -> dict:
         """当前会话（含回放用的 turns）。"""
         return {"id": self.sid, "title": self.title, "workspace": str(self.workspace),
-                "model": self.cfg.model, "turns": self.turns}
+                "model": self.cfg.model, "turns": self.turns,
+                "usage": self.usage.snapshot()}
 
     def _busy(self) -> bool:
         return self.lock.locked()
@@ -629,6 +647,8 @@ class AgentSession:
                 self.history = new_history(str(self.workspace))
                 self.turns = []
                 self.title = UNTITLED
+                self.usage = usage.UsageLedger()
+                usage.UsageLedger.attach(self.client, self.usage)
                 if not self.sid:
                     self.sid = new_id()
                 self._save()
@@ -639,6 +659,8 @@ class AgentSession:
             self.turns = []
             self.history = new_history(str(self.workspace))
             self.cancel_event.clear()
+            self.usage = usage.UsageLedger()
+            usage.UsageLedger.attach(self.client, self.usage)
             if save:
                 self._save()
             return self.current()
@@ -951,6 +973,11 @@ class AgentSession:
         """
         self.client = create_client(self.cfg)
         self.ctx.client = self.client
+        # 配置测试等场景会用 __new__ 绕过 __init__ 构造 session；账本缺失时
+        # 补一个空的，绝不让「换个后端」这种常规操作炸掉。
+        if not hasattr(self, "usage"):
+            self.usage = usage.UsageLedger()
+        usage.UsageLedger.attach(self.client, self.usage)
 
     def snapshot(self) -> dict:
         """当前配置快照（给前端设置面板）。

@@ -1225,6 +1225,20 @@ function applyEvent(turn, ev) {
         turn.root.appendChild(m);
       }
       break;
+    case "usage": {
+      // 累计口径：包含重试、warmup、长文精读/摘要/外脑子请求；
+      // 后端没返回 usage 的请求只计次数、不算 token，行尾明确标出来。
+      const t = ev.turn || {};
+      const all = ev.total || {};
+      const m = document.createElement("div");
+      m.className = "meta";
+      const miss = t.missing_usage ? ` · ${t.missing_usage} 次未返回 usage（未计入）` : "";
+      m.textContent = `本回合累计 ${t.requests ?? 0} 次调用 · prompt ${t.prompt_tokens ?? 0}` +
+        ` · 生成 ${t.gen_tokens ?? 0} · 合计 ${t.total_tokens ?? 0} tokens${miss}` +
+        ` ｜ 会话累计 ${all.requests ?? 0} 次 · ${all.total_tokens ?? 0} tokens`;
+      turn.root.appendChild(m);
+      break;
+    }
     case "notice": {
       const el = turn.ensureText();
       el.dataset.raw = (el.dataset.raw || "") + `\n${ev.text}`;

@@ -75,6 +75,23 @@ class ConsoleEmitter:
                         f"gen={st.get('eval_count')} 用时 {dur:.1f}s",
                         "cyan", self.use_color), flush=True)
 
+    def usage(self, turn: dict, total: dict) -> None:
+        """回合收尾的累计用量：含重试、warmup、子请求；缺失 usage 明确标注。
+
+        与上面逐次的 stats 是两个口径：stats 是「这一步最后一次请求」，
+        usage 是「本回合所有请求之和」，别混着读。
+        """
+        miss = int(turn.get("missing_usage") or 0)
+        extra = f"，其中 {miss} 次后端未返回 usage（未计入 token）" if miss else ""
+        print(color(f"─── 本回合 {turn.get('requests', 0)} 次调用 · "
+                    f"prompt {turn.get('prompt_tokens', 0)} · "
+                    f"生成 {turn.get('gen_tokens', 0)} · "
+                    f"合计 {turn.get('total_tokens', 0)} tokens{extra}",
+                    "cyan", self.use_color), flush=True)
+        print(color(f"    会话累计 {total.get('requests', 0)} 次调用 · "
+                    f"{total.get('total_tokens', 0)} tokens",
+                    "dim", self.use_color), flush=True)
+
     def notice(self, text: str) -> None:
         print(color(text, "yellow", self.use_color), flush=True)
 
