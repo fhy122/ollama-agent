@@ -209,17 +209,34 @@ function renderMarkdown(src) {
 
 // ---- 自动跟随（stick-to-bottom）----
 // 输出中每个增量都调 scrollBottom 会把上滑回看的用户拽回底部。
-// 规则：用户滚离底部 → 跟随暂停；滚回底部（或点「回到底部」）→ 恢复。
+// 规则：用户向上滚 → 跟随暂停；滚回底部（或点「回到底部」）→ 恢复。
 // 主动作（发消息、切会话、回放历史）强制滚底并顺带恢复跟随。
+// 注意：不能按「离底距离」判断回看——生成中 scroll 事件迟到、内容在
+// 两次事件之间疯长，会把程序滚动/内容生长误判成用户上滑，导致
+// 「滚轮失灵、点回到底也弹回」。改为按滚动方向 + 贴底判定用户意图。
 let followBottom = true;
+let lastTop = 0;
 
 function distFromBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
 }
 
 messagesEl.addEventListener("scroll", () => {
-  followBottom = distFromBottom() < 48;
+  const top = messagesEl.scrollTop;
+  if (distFromBottom() < 48) {
+    followBottom = true;             // 贴底 = 跟随（含内容收缩导致的 clamp 回跳）
+  } else if (top < lastTop - 1) {
+    followBottom = false;            // 向上滚 = 用户想回看
+  }
+  // 其余情况（离底且向上变小/不变，多半是内容增长）保持现状
+  lastTop = top;
   updateJumpBtn();
+}, { passive: true });
+
+// 滚轮/触摸上滑是明确的回看意图，先于 scroll 事件生效：
+// 主线程繁忙时 scroll 事件会迟到，等它再判就被生成中的 scrollBottom() 抵消了。
+messagesEl.addEventListener("wheel", (e) => {
+  if (e.deltaY < 0) followBottom = false;
 }, { passive: true });
 
 function updateJumpBtn() {
@@ -234,6 +251,7 @@ function scrollBottom(force) {
   if (!force && !followBottom) { updateJumpBtn(); return; }
   if (force) followBottom = true;
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  lastTop = messagesEl.scrollTop;    // 同步基准，避免自己的程序滚动被当成用户上滑
   updateJumpBtn();
 }
 
@@ -2361,6 +2379,10 @@ try { savedSb = localStorage.getItem("sbOpen"); } catch { /* 隐私模式忽略 
 if (window.innerWidth <= 900 || savedSb === "0") setSidebar(false);
 
 (async function boot() {
+  // 浏览器刷新会把输入框旧值还原回来（autocomplete=off 挡不住），
+  // 不清掉的话 loadSessions 会拿着旧值自动跑一次搜索。
+  searchInput.value = "";
+  btnSearchClear.hidden = true;
   const r = await loadSessions();
   // 刷新时回合可能还在跑（后端不再因断连打断）：先问 /api/live
   const live = await fetch("/api/live").then((x) => x.json()).catch(() => null);
