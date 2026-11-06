@@ -1,7 +1,7 @@
 """聊天后端抽象。
 
 同一套接口（chat / list_models / unload / switch_model / warmup / abort），
-两种协议各自实现，调用方不需要知道背后是 Ollama 还是 OpenAI 兼容中转站。
+两种协议各自实现，调用方不需要知道背后是本地 Ollama 还是 OpenAI 兼容的模型服务端。
 
     agent/backends/base.py             ChatClient 抽象基类 + StreamParser 基类
     agent/backends/ollama.py           /api/chat

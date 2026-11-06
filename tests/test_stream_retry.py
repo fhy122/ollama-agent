@@ -157,6 +157,26 @@ def test_bare_fatal_error_still_raises():
     assert client.calls == 1
 
 
+def test_long_error_notice_keeps_full_advice():
+    """错误摘要要保留整句：别把「减小上下文」砍成「减小上」。
+
+    loop.py 以前用 [:80] 截错误文本，首字节超时的提示会被砍在半句话上，
+    后面直接接「N 秒后自动重试」，用户看不出该怎么办。
+    """
+    long_err = RuntimeError(
+        "等模型服务端第一个字节超过 180 秒仍无响应（连接正常但一直不回）。"
+        "多为模型服务端过载/排队，或本地模型加载中；重发一次常可恢复。"
+        "持续复现请换端点/换模型或减小上下文；"
+        "本地冷启动慢可设 OLLAMA_AGENT_TTFT 调大预算")
+    client = _ScriptedClient([long_err, _resp(content="恢复后完成")])
+    out, history, em = _turn(client)
+    assert out == "恢复后完成"
+    note = next(n for n in em.notices if "自动重试" in n)
+    assert "减小上下文" in note, note
+    assert "减小上，" not in note, note
+    assert "模型服务端" in note, note
+
+
 def test_exhausted_empty_failures_end_with_note():
     """空输出连续失败到次数用尽：按原样收尾，报错明示。"""
     client = _ScriptedClient([_resp(error="TimeoutError: timed out")])

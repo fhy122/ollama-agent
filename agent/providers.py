@@ -11,6 +11,11 @@
 另记一条实测结论：/api/* 是 Ollama 专有路径，aigatehub 这类中转站对它返回的是
 自己 Web 后端的 success=false / UNAUTHORIZED，不是 Ollama 的响应格式。
 所以「把 host 指过去就能用」是错的，必须换路径 + 换协议。
+
+术语约定：用户填的地址背后可能是本地 Ollama、模型厂商官方 API（百炼 / 智谱 /
+DeepSeek 等）、第三方中转服务或本地推理服务（vLLM / LM Studio）。面向用户的
+文案统一称「模型服务端」（本地 Ollama 同样是模型服务端），「中转站」只用于特指
+第三方中转这一种，不作为统称。
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ PROVIDERS = (OLLAMA, OPENAI)
 
 PROVIDER_LABELS = {
     OLLAMA: "Ollama 原生（本地 / 别人的 Ollama，/api/chat）",
-    OPENAI: "OpenAI 兼容（中转站 / vLLM / LM Studio，/v1/chat/completions）",
+    OPENAI: "OpenAI 兼容（模型厂商官方 API / 中转服务 / vLLM / LM Studio，/v1/chat/completions）",
 }
 
 
@@ -72,7 +77,7 @@ def to_openai_payload(model: str, messages: list, tools: list | None = None,
                       temperature: float = 0.7) -> dict:
     """构造 OpenAI 兼容请求体。
 
-    num_ctx / keep_alive / think 一律不下发：中转站和 vLLM 会直接 400。
+    num_ctx / keep_alive / think 一律不下发：多数模型服务端和 vLLM 会直接 400。
     """
     from agent.backends.openai_messages import to_openai_messages
 

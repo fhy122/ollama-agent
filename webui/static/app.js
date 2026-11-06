@@ -28,6 +28,7 @@ const state = {
   sid: "",      // 当前对话 id
   models: null, // 模型配置清单（内置 Ollama + 自定义 profiles）
   noSearchApi: false, // 后端没有 /api/sessions/search（旧进程），搜索直接给重启提示
+  searchQuery: "",    // 搜索态唯一真值：只有用户主动输入才更新，绝不信 input.value
 };
 
 // ---------------- 工具函数 ----------------
@@ -476,7 +477,8 @@ async function loadSessions() {
     const r = await api("/api/sessions");
     state.sid = (r.current && r.current.id) || "";
     state.sessions = r.sessions || [];
-    if (searchInput.value.trim()) await runSearch(searchInput.value);
+    syncSearchUI();                 // 顺手把被浏览器/扩展改过的显示拉回真值
+    if (state.searchQuery) await runSearch(state.searchQuery);
     else renderSessionList(r.sessions, state.sid);
     return r;
   } catch {
@@ -489,6 +491,7 @@ async function loadSessions() {
 const RE_META = /[.*+?^${}()|[\]\\]/g;
 let searchTimer = 0;
 let searchSeq = 0;   // 竞态令牌：慢响应回来时若已有新输入就丢弃
+let searchReady = false;  // window.load 之后才把 input 事件当用户输入（躲开加载期自动填充）
 
 // 先转义再包 <mark>：esc 过的词才能和 esc 过的正文对上
 function highlight(text, terms) {
@@ -521,6 +524,7 @@ function renderSearchResults(results, kw) {
 
 async function runSearch(raw) {
   const kw = String(raw || "").trim();
+  state.searchQuery = kw;   // 任何路径进入搜索，都把真值同步成实际生效的关键词
   btnSearchClear.hidden = !kw;
   if (!kw) {
     renderSessionList(state.sessions, state.sid);
@@ -550,6 +554,7 @@ async function runSearch(raw) {
 function clearSearch(focus = true) {
   clearTimeout(searchTimer);
   searchSeq++;                            // 让在飞的请求作废
+  state.searchQuery = "";
   searchInput.value = "";
   btnSearchClear.hidden = true;
   renderSessionList(state.sessions, state.sid);
@@ -558,8 +563,19 @@ function clearSearch(focus = true) {
 
 // 列表被局部刷新时（删除/切换/新建），搜索中要重新搜，否则会闪回全量列表
 function refreshSessionPane(list) {
-  if (searchInput.value.trim()) runSearch(searchInput.value);
+  syncSearchUI();
+  if (state.searchQuery) runSearch(state.searchQuery);
   else renderSessionList(list, state.sid);
+}
+
+// 浏览器刷新/会话恢复会把上次的查询词塞回 input，且不派发 input 事件
+// （autocomplete="new-password" 只是降低概率）。搜索态只认 state.searchQuery，
+// 这里把界面显示强行拉回真值，避免框里留着一段已经不生效的旧字。
+function syncSearchUI() {
+  const q = state.searchQuery || "";
+  // 用 trim 比较：用户正输入的 "Excel " 不该被中途改写成 "Excel"
+  if (searchInput.value.trim() !== q) searchInput.value = q;
+  btnSearchClear.hidden = !q;
 }
 
 function clearView() {
@@ -1439,7 +1455,13 @@ async function pollStatuses() {
     if (sig === statusesSig && !listChanged) return;
     statusesSig = sig;
     state.statuses = st;
-    renderSessionList(state.sessions, state.sid);
+    // 搜索态下不能用全量列表覆盖结果（原来每 2.5s 会把搜索结果冲掉）；
+    // 会话集合变了才重搜一次，保证结果不过期，也不打断列表交互。
+    if (state.searchQuery) {
+      if (listChanged) runSearch(state.searchQuery);
+    } else {
+      renderSessionList(state.sessions, state.sid);
+    }
   } catch { /* 忽略 */ }
 }
 
@@ -1610,8 +1632,8 @@ function updateMfNote() {
   if (!note) return;
   if (p === "openai") {
     note.textContent = "走 /v1/chat/completions，需要 API Key；" +
-      (host && !/\/v1/i.test(host) ? "当前地址不含 /v1，多数中转站会 404。" : "地址要指到 /v1。") +
-      " num_ctx / think 不会下发（中转站不认，填了也不生效）。";
+      (host && !/\/v1/i.test(host) ? "当前地址不含 /v1，多数模型服务端会 404。" : "地址要指到 /v1。") +
+      " num_ctx / think 不会下发（OpenAI 兼容接口不认，填了也不生效）。";
   } else {
     note.textContent = "走 /api/chat，不需要 Key。别人的 Ollama 要让对方设 " +
       "OLLAMA_HOST=0.0.0.0 才能外部访问。";
@@ -2235,18 +2257,26 @@ document.querySelectorAll(".set-tab").forEach((b) => {
 $("btn-refresh-files").onclick = loadWorkspaceFiles;
 $("btn-refresh-sessions").onclick = () => loadSessions();
 
-// 搜索历史对话：输入即搜（220ms 防抖），搜索态下刷新/删除都保持搜索
+// 搜索历史对话：输入即搜（220ms 防抖），搜索态下刷新/删除都保持搜索。
+// 浏览器密码管理器会把保存的值灌进输入框，且可能派发 input 事件；只有加载完成
+// 且输入框正被用户聚焦时，才把 input 当成搜索意图，其余一律回滚显示。
 searchInput.addEventListener("input", () => {
   clearTimeout(searchTimer);
+  if (!searchReady || document.activeElement !== searchInput) {
+    syncSearchUI();    // 显示拉回真值，state.searchQuery 不动
+    return;
+  }
   const q = searchInput.value;
-  btnSearchClear.hidden = !q.trim();
+  state.searchQuery = q.trim();
+  btnSearchClear.hidden = !state.searchQuery;
   searchTimer = setTimeout(() => runSearch(q), 220);
 });
+searchInput.addEventListener("focus", syncSearchUI);
 searchInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     clearTimeout(searchTimer);
-    runSearch(searchInput.value);
+    runSearch(searchInput.value);   // runSearch 会把 trim 后的词写回 state.searchQuery
   } else if (e.key === "Escape") {
     e.preventDefault();
     e.stopPropagation();          // 别让全局 Esc 顺手关掉侧栏/弹窗
@@ -2374,15 +2404,24 @@ function syncSidebarForWidth() {
 window.addEventListener("resize", syncSidebarForWidth);
 
 // ---------------- 启动 ----------------
+// 浏览器有时在本脚本跑完之后才恢复表单值，还可能顺带派发 input 事件；
+// load 之前不信任任何 input，load 时把显示同步回搜索态真值。
+function markSearchReady() {
+  searchReady = true;
+  syncSearchUI();
+}
+if (document.readyState === "complete") markSearchReady();
+else window.addEventListener("load", markSearchReady, { once: true });
+
 let savedSb = null;
 try { savedSb = localStorage.getItem("sbOpen"); } catch { /* 隐私模式忽略 */ }
 if (window.innerWidth <= 900 || savedSb === "0") setSidebar(false);
 
 (async function boot() {
-  // 浏览器刷新会把输入框旧值还原回来（autocomplete=off 挡不住），
-  // 不清掉的话 loadSessions 会拿着旧值自动跑一次搜索。
-  searchInput.value = "";
-  btnSearchClear.hidden = true;
+  // 浏览器刷新会把输入框旧值还原回来（autocomplete 也挡不住），
+  // 所以开机把搜索态复位成「没在搜索」，并同步界面显示。
+  state.searchQuery = "";
+  syncSearchUI();
   const r = await loadSessions();
   // 刷新时回合可能还在跑（后端不再因断连打断）：先问 /api/live
   const live = await fetch("/api/live").then((x) => x.json()).catch(() => null);

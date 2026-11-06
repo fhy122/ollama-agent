@@ -209,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="ollama_agent",
         description="极简本地 Agent（Ollama / OpenAI 兼容后端 + 工具插件化）")
     ap.add_argument("--host", default=DEFAULT_HOST,
-                    help=f"后端地址，默认 {DEFAULT_HOST}；中转站填 https://xxx/v1")
+                    help=f"后端地址，默认 {DEFAULT_HOST}；接 OpenAI 兼容的模型服务端时填 https://xxx/v1")
     ap.add_argument("--provider", default="auto", choices=["auto", "ollama", "openai"],
                     help="后端协议：ollama=/api/chat；openai=/v1/chat/completions；"
                          "auto=按 host 猜（带 /v1 判为 openai），默认 auto")

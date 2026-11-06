@@ -45,7 +45,7 @@
         </div>
         <div class="sb-search">
           <svg class="sb-search-ico" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16.5 16.5 21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input type="text" id="session-search" placeholder="搜索对话内容" autocomplete="off" spellcheck="false" aria-label="搜索历史对话">
+          <input type="text" id="session-search" name="oa-session-query" placeholder="搜索对话内容" autocomplete="off" spellcheck="false" aria-label="搜索历史对话">
           <button class="sb-search-clear" id="btn-search-clear" title="清空搜索（Esc）" aria-label="清空搜索" hidden>&times;</button>
         </div>
         <div class="sessions" id="session-list"><p class="sb-empty">还没有历史对话</p></div>
@@ -179,7 +179,7 @@
       <div class="form-head">
         <div class="sb-title form-sticky" id="model-form-title">新建自定义模型</div>
         <label class="field">显示名（随便取，方便自己认）
-          <input type="text" id="mf-name" placeholder="例如 DeepSeek 中转站">
+          <input type="text" id="mf-name" placeholder="例如 DeepSeek 官方 API">
         </label>
       </div>
       <label class="field">协议类型
@@ -192,7 +192,7 @@
         <input type="text" id="mf-host" placeholder="https://api.deepseek.com/v1">
       </label>
       <label class="field">API Key
-        <input type="password" id="mf-key" placeholder="sk-…；Ollama 不需要，可留空">
+        <input type="password" id="mf-key" autocomplete="new-password" placeholder="sk-…；Ollama 不需要，可留空">
       </label>
       <div class="model-form-actions">
         <button class="ghost sm" id="btn-mf-probe">测试连通性</button>

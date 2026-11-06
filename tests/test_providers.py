@@ -20,8 +20,20 @@ from agent.backends import (  # noqa: E402
 )
 from agent.backends.openai_messages import to_openai_messages  # noqa: E402
 from agent.providers import (  # noqa: E402
-    OLLAMA, OPENAI, detect_provider, endpoint, to_openai_payload,
+    OLLAMA, OPENAI, PROVIDER_LABELS, detect_provider, endpoint, to_openai_payload,
 )
+
+
+def test_backend_labels_do_not_presuppose_relay():
+    """对端是谁由用户填的地址决定：显示名不能预设成「中转站」。
+
+    name 会拼进「等{name}第一个字节…」「连不上{name}」「{name} API 错误 NNN」，
+    用 DeepSeek / 百炼 / 智谱官方 API 或 vLLM 时写「中转站」是错的。
+    """
+    assert "中转站" not in OpenAICompatClient.name, OpenAICompatClient.name
+    assert "模型服务端" in OpenAICompatClient.name, OpenAICompatClient.name
+    assert "中转站" not in PROVIDER_LABELS[OPENAI], PROVIDER_LABELS[OPENAI]
+    assert "官方 API" in PROVIDER_LABELS[OPENAI], PROVIDER_LABELS[OPENAI]
 
 
 def test_detect_provider():

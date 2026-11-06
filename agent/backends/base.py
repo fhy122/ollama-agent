@@ -316,12 +316,13 @@ class ChatClient:
             self._drop_conn()
             # 首字节之前就超时：一个 token 都没收到。此时几乎不可能是
             # 「模型太慢」——慢也该在 TTFT 预算内回响应头；多半是对端挂了。
+            # 对端可能是本地 Ollama、模型厂商官方 API 或中转服务，文案不预设是哪一种。
             raise RuntimeError(
                 f"等{self.name}第一个字节超过 {ttft:.0f} 秒仍无响应"
-                f"（连接正常，但对端收到请求后一直不回）。"
-                f"多为中转站过载，直接重发一次常可恢复；持续复现请换端点/换模型，"
-                f"或减小上下文。本地模型冷启动慢可设环境变量 "
-                f"OLLAMA_AGENT_TTFT 调大此预算") from e
+                f"（连接正常但一直不回）。"
+                f"多为模型服务端过载/排队，或本地模型加载中；"
+                f"重发一次常可恢复。持续复现请换端点/换模型或减小上下文；"
+                f"本地冷启动慢可设 OLLAMA_AGENT_TTFT 调大预算") from e
         except (ConnectionError, OSError) as e:
             self._drop_conn()
             if self._abort_requested:

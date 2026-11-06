@@ -1,11 +1,11 @@
 """OpenAI 兼容后端：/v1/chat/completions。
 
-覆盖 token 中转站、vLLM、LM Studio、OpenRouter、官方 OpenAI 等所有
-「说 OpenAI 协议」的服务。
+覆盖模型厂商官方 API（百炼 / 智谱 / DeepSeek / OpenAI 等）、第三方中转服务、
+vLLM、LM Studio、OpenRouter 等所有「说 OpenAI 协议」的模型服务端。
 
 与 Ollama 的差异都收敛在这个文件里：
   鉴权       Authorization: Bearer <key>（Ollama 无）
-  字段       num_ctx / keep_alive / think 一律不下发（中转站会 400）
+  字段       num_ctx / keep_alive / think 一律不下发（部分模型服务端会 400）
   工具消息   必须带 tool_call_id（Ollama 靠顺序配对）
   图片       content 数组里的 image_url data URL（Ollama 是 message.images）
   流格式     SSE "data: {...}" + [DONE]（Ollama 是整行 JSON）
@@ -108,14 +108,16 @@ class OpenAIStreamParser(StreamParser):
         return ev
 
     def flush(self) -> list[dict]:
-        """流读完仍没吐出工具调用（中转站漏了结束帧）→ 这里补上。"""
+        """流读完仍没吐出工具调用（模型服务端漏了结束帧）→ 这里补上。"""
         return self._drain_tools()
 
 
 class OpenAICompatClient(ChatClient):
-    """OpenAI 兼容协议客户端（中转站 / vLLM / LM Studio / 官方 OpenAI）。"""
+    """OpenAI 兼容协议客户端（模型厂商官方 API / 中转服务 / vLLM / LM Studio）。"""
 
-    name = "中转站"
+    # 对端是谁由用户填的地址决定，别在显示名里预设成「中转站」：
+    # 这个 name 会拼进「等{name}第一个字节…」「连不上{name}」等所有错误提示。
+    name = "模型服务端"
 
     def __init__(self, config):
         super().__init__(config)

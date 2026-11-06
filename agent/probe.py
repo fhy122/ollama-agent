@@ -67,7 +67,7 @@ def probe(provider: str, host: str, api_key: str = "",
     if provider == "openai" and not api_key:
         return {"ok": False, "stage": "auth",
                 "error": "OpenAI 兼容协议需要 API Key，现在没填",
-                "hint": "到中转站后台复制 Key 粘进来；确实不需要鉴权的本地服务可填任意占位串"}
+                "hint": "去模型服务端控制台复制 Key 粘进来；确实不需要鉴权的本地服务可填任意占位串"}
 
     url = _models_url(provider, host)
     req = urllib.request.Request(url, headers=_headers(provider, api_key))
@@ -199,6 +199,6 @@ def _parse_models(provider: str, data) -> list[str]:
 
 
 def _error_detail(body: str) -> str:
-    """从中转站/OpenAI 的错误体里抠出人能看的那句。"""
+    """从模型服务端/OpenAI 的错误体里抠出人能看的那句。"""
     from agent.backends.base import error_text
     return error_text(body)[:200] if body else "（没有返回内容）"

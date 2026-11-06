@@ -349,7 +349,9 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                     if kind in RETRYABLE and retry_no < cfg.stream_retries:
                         retry_no += 1
                         delay = backoff_delay(retry_no)
-                        emitter.notice(f"[⚠ {str(e)[:80]}，{delay:.1f} 秒后自动重试"
+                        # 错误摘要给够整句：以前 [:80] 会把「或减小上下文」砍成
+                        # 「或减小上」，用户看到半句话加一句「N 秒后自动重试」。
+                        emitter.notice(f"[⚠ {str(e)[:140]}，{delay:.1f} 秒后自动重试"
                                        f"（{retry_no}/{cfg.stream_retries}）]")
                         if not interruptible_sleep(delay, cancel):
                             # 退避期间用户打断：立即收尾，不留隐形等待
@@ -379,7 +381,7 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
                         emitter.notice(f"[⚠ 回答中断，已保留已生成部分，自动续写"
                                        f"（{retry_no}/{cfg.stream_retries}）]")
                     else:
-                        emitter.notice(f"[⚠ {err[:80]}，自动重试"
+                        emitter.notice(f"[⚠ {err[:140]}，自动重试"
                                        f"（{retry_no}/{cfg.stream_retries}）]")
                     continue
                 break     # 成功 / 打断 / 不可重试 / 次数用尽 → 交给下方原判定收尾
