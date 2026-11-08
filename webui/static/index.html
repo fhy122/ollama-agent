@@ -6,6 +6,8 @@
 <title>Ollama Agent</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" sizes="any">
 <link rel="alternate icon" href="/static/favicon.ico" sizes="16x16 32x32 48x48">
+<!-- KaTeX 0.16.47（MIT，本地静态副本：static/vendor/katex/LICENSE），离线可用 -->
+<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -214,7 +216,9 @@
         </select>
       </label>
       <label class="field">num_ctx（仅 Ollama 生效）
-        <input type="number" id="mf-ctx" step="1024" min="0" placeholder="0 = 服务端默认">
+        <select id="mf-ctx"></select>
+        <input type="number" id="mf-ctx-custom" class="hidden" min="1" max="1048576"
+               step="1024" placeholder="输入 token 数，例如 12288">
       </label>
       <label class="field">temperature
         <input type="number" id="mf-temp" step="0.1" min="0" max="2" value="0.7">
@@ -255,8 +259,11 @@
       </select>
     </label>
     <label class="field">num_ctx（仅 Ollama 生效，改值会触发模型重载）
-      <input type="number" id="set-ctx" step="1024" min="0" placeholder="0 = 服务端默认">
+      <select id="set-ctx"></select>
+      <input type="number" id="set-ctx-custom" class="hidden" min="1" max="1048576"
+             step="1024" placeholder="输入 token 数，例如 12288">
     </label>
+    <p class="drawer-note">K = 1024 tokens，越大的上下文越占显存；改值会触发模型重载。命令行 /ctx 仍可填任意整数。</p>
     <label class="field">temperature
       <input type="number" id="set-temp" step="0.1" min="0" max="2">
     </label>
@@ -321,6 +328,7 @@
   </div>
 </div>
 
+<script src="/static/vendor/katex/katex.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

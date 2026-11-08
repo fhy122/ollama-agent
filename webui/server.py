@@ -25,6 +25,9 @@ from webui.stream import StreamEmitter
 import tools as tools_pkg
 
 STATIC_DIR = Path(__file__).parent / "static"
+# Windows 的 mimetypes 表里没有 .woff2（guess_type 返回 None → octet-stream），
+# 而本地 KaTeX 的数学字体靠这个后缀加载，显式注册别让浏览器当二进制丢掉。
+mimetypes.add_type("font/woff2", ".woff2")
 MAX_UPLOAD = 20 * 1024 * 1024  # 20MB
 # 应用数据统一在 {workspace}/.ollama-agent/ 下（HIDDEN_DIRNAME）。
 # 旧的 .uploads/.clip_cache 留在集合里：迁移前的残留也不该出现在搜索结果里。

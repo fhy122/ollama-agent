@@ -528,6 +528,23 @@ button:focus-visible, .icon-btn:focus-visible, .ws-item:focus-visible, .ol-item:
   border-color: var(--border-strong);
 }
 
+/* 数学公式：KaTeX 本地副本，颜色继承 .bubble（浅色主题自动是深色字）。
+   显示公式不换行，长公式靠外层横向滚动，不把气泡撑破。 */
+.bubble .katex-display { margin: 0; }
+.md-math-block {
+  margin: 12px 0;
+  padding: 4px 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+.bubble code.md-math-fallback {
+  color: var(--text-2);
+  background: var(--code-bg);
+  border: 1px dashed var(--border-strong);
+  white-space: pre-wrap;
+}
+
 /* 代码块卡片 */
 .code-card {
   margin: 12px 0;

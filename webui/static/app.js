@@ -46,6 +46,101 @@ function toast(msg, isErr = false) {
   setTimeout(() => el.remove(), 2800);
 }
 
+// ---------------- num_ctx 预设档位 ----------------
+// 让人手填 65536 这种数字太费劲：给常见的 K 档，提交值仍是精确 token 数。
+// K 一律按 1024 算，选项文案把精确值写出来，免得 8K 被当成 8000。
+const CTX_PRESETS = [
+  [0, "服务端默认（不传 num_ctx）"],
+  [4096, "4K（4,096 tokens）"],
+  [8192, "8K（8,192 tokens）"],
+  [16384, "16K（16,384 tokens）"],
+  [32768, "32K（32,768 tokens）"],
+  [65536, "64K（65,536 tokens）"],
+  [131072, "128K（131,072 tokens）"],
+];
+const CTX_CUSTOM = "custom";
+const CTX_CUSTOM_HINT =
+  "自定义 num_ctx 要填正整数 token 数（例如 12288）；不想填就选 4K / 8K 这类预设档位。";
+
+function fmtCtx(n) {
+  const v = Number(n) || 0;
+  if (v > 0 && v % 1024 === 0) return `${v / 1024}K（${v.toLocaleString("en-US")} tokens）`;
+  return `${v.toLocaleString("en-US")} tokens`;
+}
+
+// 顶栏 chip 地方小，只放短标签
+function fmtCtxShort(n) {
+  const v = Number(n) || 0;
+  return v > 0 && v % 1024 === 0 ? `${v / 1024}K` : v.toLocaleString("en-US");
+}
+
+function buildCtxSelect(sel) {
+  if (sel.dataset.ctxReady === "1") return;
+  sel.innerHTML = CTX_PRESETS.map(([v, label]) =>
+    `<option value="${v}">${label}</option>`).join("") +
+    `<option value="${CTX_CUSTOM}">自定义数值…</option>`;
+  sel.dataset.ctxReady = "1";
+}
+
+// 回填：预设档位直接选中；配置文件里的非标准值单独插一项并选中，
+// 保证「打开看一眼再点保存」不会悄悄把它改成某个预设值。
+function setCtxValue(sel, custom, raw) {
+  buildCtxSelect(sel);
+  const n = Number(raw) || 0;
+  sel.querySelectorAll("option[data-extra]").forEach((o) => o.remove());
+  custom.value = "";
+  custom.classList.add("hidden");
+  if (n > 0 && !CTX_PRESETS.some(([v]) => v === n)) {
+    const o = document.createElement("option");
+    o.value = String(n);
+    o.dataset.extra = "1";
+    o.textContent = `当前值：${fmtCtx(n)}`;
+    sel.insertBefore(o, sel.querySelector(`option[value="${CTX_CUSTOM}"]`));
+  }
+  sel.value = String(n);
+}
+
+// null = 选了自定义却没填合法值：调用方要提示，不能静默当成 0 提交
+function getCtxValue(sel, custom) {
+  if (sel.value !== CTX_CUSTOM) return Number(sel.value || 0);
+  const n = Number(custom.value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function initCtxControl(sel, custom) {
+  buildCtxSelect(sel);
+  sel.addEventListener("change", () => {
+    const on = sel.value === CTX_CUSTOM;
+    custom.classList.toggle("hidden", !on);
+    if (on) custom.focus();
+  });
+}
+
+// 协议不支持时显示「不适用」并禁用，但别把真实值从表单里抹掉：
+// 保存模型配置仍按原值提交，否则切一次中转站就把已存的 num_ctx 清成 0。
+function setCtxCap(sel, custom, supported, reason, current) {
+  setFieldCap(sel.id, supported, reason);
+  const off = sel.querySelector("option[data-off]");
+  if (!supported) {
+    if (!off) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.dataset.off = "1";
+      o.textContent = "不适用";
+      sel.appendChild(o);
+    }
+    sel.value = "";
+    custom.classList.add("hidden");
+    custom.disabled = true;
+  } else {
+    if (off) {                       // 刚从禁用态恢复，按原值重建选中项
+      off.remove();
+      setCtxValue(sel, custom, current);
+    }
+    custom.disabled = false;
+  }
+}
+
 async function api(path, body, timeoutMs) {
   const opts = body === undefined
     ? {}
@@ -165,6 +260,62 @@ function codeBlockHtml(raw, lang) {
     `<pre><code>${esc(raw)}</code></pre></div>`;
 }
 
+// ---------------- 数学公式（KaTeX，本地静态副本） ----------------
+// 定界符必须在 esc() 之前抽走：LaTeX 里的 < > & 一旦变成 &lt; &gt; &amp;，
+// KaTeX 收到的就是实体名而不是关系符，公式会被拆错。
+// 只认「成对闭合」的定界符：流式输出时公式常只打了一半，未闭合的 $ 先当
+// 普通文本，等补齐再渲染，免得每个增量都闪一次红色错误。
+const MATH_CACHE = new Map();
+
+function mathHtml(tex, display) {
+  const key = (display ? "D:" : "I:") + tex;
+  if (MATH_CACHE.has(key)) return MATH_CACHE.get(key);
+  let html;
+  if (typeof katex === "undefined" || !katex.renderToString) {
+    // 库没加载成（文件缺失/被拦）不能静默吞掉内容，回退成原文
+    html = `<code class="md-math-fallback" title="公式渲染库未加载，显示原始 LaTeX">${esc(tex)}</code>`;
+  } else {
+    try {
+      html = katex.renderToString(tex, {
+        displayMode: display,
+        throwOnError: false,   // 写错的 LaTeX 显示成带标记的原文，不抛异常打断整条消息
+        strict: "ignore",
+        trust: false,         // 禁 \href / \includegraphics，防注入
+      });
+    } catch (e) {
+      html = `<code class="md-math-fallback" title="公式无法渲染：${esc(e.message)}">${esc(tex)}</code>`;
+    }
+  }
+  // 流式渲染每来一个字就全量重排一遍，公式结果要缓存；缓存本身别无上限涨
+  if (MATH_CACHE.size >= 300) MATH_CACHE.clear();
+  MATH_CACHE.set(key, html);
+  return html;
+}
+
+function extractMath(src, out) {
+  const push = (tex, display) => {
+    const t = tex.trim();
+    if (!t) return null;
+    out.push({ display, html: mathHtml(t, display) });
+    return `\u0000M${out.length - 1}\u0000`;
+  };
+  // 显示公式（可跨行）
+  let s = src.replace(/\$\$([\s\S]+?)\$\$/g, (m, tex) => push(tex, true) ?? m);
+  s = s.replace(/\\\[([\s\S]+?)\\\]/g, (m, tex) => push(tex, true) ?? m);
+  // 行内公式：内容非空、不是纯价格数字，且前后不紧贴数字（$5 / 10$ 是货币）
+  const inline = (m, tex, offset, str) => {
+    const t = tex.trim();
+    if (!t || /^[\d.,\s]+$/.test(t)) return m;
+    const before = str[offset - 1] || "";
+    const after = str[offset + m.length] || "";
+    if (/\d/.test(before) || /\d/.test(after)) return m;
+    return push(t, false) ?? m;
+  };
+  s = s.replace(/(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, inline);
+  s = s.replace(/\\\(([\s\S]+?)\\\)/g, inline);
+  return s;
+}
+
 function renderMarkdown(src) {
   // Windows 换行先归一化：正则里的 $ 不吃 \r，行末多出的 \r 会让
   // 表格/标题/列表的 ^…$ 逐行匹配全部失配（实测：CRLF 的 .md 表格渲染成纯文本）
@@ -174,7 +325,15 @@ function renderMarkdown(src) {
       const m = part.match(/^```([\w+#.-]*)\n?([\s\S]*?)```$/);
       return codeBlockHtml(m ? m[2] : part, m ? m[1] : "");
     }
-    let s = esc(part);
+    // 行内代码先占位：里面的 $ 不是公式、** 不是粗体、URL 不是链接
+    const codes = [];
+    let raw = part.replace(/`([^`\n]+)`/g, (m, code) => {
+      codes.push(`<code>${esc(code)}</code>`);
+      return `\u0000C${codes.length - 1}\u0000`;
+    });
+    const maths = [];
+    raw = extractMath(raw, maths);
+    let s = esc(raw);
 
     // 表格先抽出来做占位，避免被后续行内规则和段落包裹打乱
     const tables = [];
@@ -185,7 +344,6 @@ function renderMarkdown(src) {
       return `\u0000T${tables.length - 1}\u0000`;
     });
 
-    s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
     s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
     s = s.replace(/^#{1,4}\s+(.+)$/gm, "<h4>$1</h4>");
     s = s.replace(/^(?:[-*]|\d+\.)\s+(.+)$/gm, "<li>$1</li>");
@@ -201,10 +359,22 @@ function renderMarkdown(src) {
     s = s.replace(/\u0000I(\d+)\u0000/g, (m, i) => imgs[Number(i)]);
 
     s = s.replace(/\u0000T(\d+)\u0000/g, (m, i) => `\n\n${tables[Number(i)]}\n\n`);
-    return s.split(/\n{2,}/).map((b) =>
-      b.trim() ? (b.startsWith("<h4>") || b.startsWith("<ul>") || b.startsWith("<div")
-        ? b : `<p>${b.replace(/\n/g, "<br>")}</p>`) : ""
-    ).join("");
+    // 块级公式换成 B 占位，让它在段落分割里独占一块、不被 <p> 包住。
+    // 到这一步粗体/链接规则都跑完了，最后才把占位换成 KaTeX 的 HTML，
+    // 公式内部的换行和标签就不会被任何 Markdown 规则拆坏。
+    s = s.replace(/\u0000M(\d+)\u0000/g, (m, i) => maths[Number(i)].display
+      ? `\n\n\u0000B${i}\u0000\n\n` : m);
+    return s.split(/\n{2,}/).map((b) => {
+      const t = b.trim();
+      if (!t) return "";
+      const bm = t.match(/^\u0000B(\d+)\u0000$/);
+      if (bm) return `<div class="md-math-block">${maths[Number(bm[1])].html}</div>`;
+      return (t.startsWith("<h4>") || t.startsWith("<ul>") || t.startsWith("<div"))
+        ? t : `<p>${t.replace(/\n/g, "<br>")}</p>`;
+    }).join("")
+      .replace(/\u0000M(\d+)\u0000/g, (m, i) => maths[Number(i)].html)
+      .replace(/\u0000B(\d+)\u0000/g, (m, i) => maths[Number(i)].html)
+      .replace(/\u0000C(\d+)\u0000/g, (m, i) => codes[Number(i)]);
   }).join("");
 }
 
@@ -1579,12 +1749,13 @@ function renderCustom(rows, activeId) {
 
 // ---------------- 新建 / 编辑表单 ----------------
 
-const mf = { open: false, id: "", hasKey: false };
+const mf = { open: false, id: "", hasKey: false, ctx: 0 };
 
 function openModelForm(p) {
   mf.open = true;
   mf.id = (p && p.id) || "";
   mf.hasKey = !!(p && p.has_key);
+  mf.ctx = (p && p.num_ctx) || 0;
   $("model-form-title").textContent = p ? "编辑模型配置" : "新建自定义模型";
   $("mf-name").value = (p && p.name) || "";
   $("mf-provider").value = (p && p.provider) || "openai";
@@ -1595,7 +1766,7 @@ function openModelForm(p) {
     : "sk-…；Ollama 不需要，可留空";
   $("mf-model").value = (p && p.model) || "";
   $("mf-think").value = (p && p.think) || "off";
-  $("mf-ctx").value = (p && p.num_ctx) || "";
+  setCtxValue($("mf-ctx"), $("mf-ctx-custom"), mf.ctx);
   $("mf-temp").value = (p && p.temperature != null) ? p.temperature : 0.7;
   $("mf-model-options").innerHTML = "";
   $("mf-probe-result").textContent = "";
@@ -1639,7 +1810,7 @@ function updateMfNote() {
       "OLLAMA_HOST=0.0.0.0 才能外部访问。";
   }
   // num_ctx 只对 Ollama 有意义：显式禁用并说明，免得人填了以为生效
-  setFieldCap("mf-ctx", p === "ollama", CTX_OFF_HINT);
+  setCtxCap($("mf-ctx"), $("mf-ctx-custom"), p === "ollama", CTX_OFF_HINT, mf.ctx);
   setFieldCap("mf-think", p === "ollama", CTX_OFF_HINT);
 }
 
@@ -1691,6 +1862,12 @@ async function saveModel() {
     return toast("OpenAI 兼容协议需要 API Key：粘贴到 Key 框，或先点测试连通性", true);
   }
   if (!model) return toast("填模型名称；不确定就先点「测试连通性」，会列出该站的模型", true);
+  // OpenAI 协议下这个控件是禁用的：按打开表单时的原值提交，
+  // 既不让「不适用」被当成 0，也不让禁用的控件改动已存配置。
+  const ctx = provider === "ollama"
+    ? getCtxValue($("mf-ctx"), $("mf-ctx-custom"))
+    : mf.ctx;
+  if (ctx === null) return toast(CTX_CUSTOM_HINT, true);
   const payload = {
     id: mf.id,
     name: name || model,
@@ -1699,7 +1876,7 @@ async function saveModel() {
     api_key: $("mf-key").value.trim(),
     model,
     think: $("mf-think").value,
-    num_ctx: Number($("mf-ctx").value || 0),
+    num_ctx: ctx,
     temperature: Number($("mf-temp").value || 0.7),
   };
   try {
@@ -1772,17 +1949,19 @@ async function loadConfig() {
     // 顶栏显示「不适用」而不是一个假的 65536（用户会以为调过上下文）
     const caps = c.caps || {};
     applyCap($("chip-think"), caps.think, "think", c.think);
-    applyCap($("chip-ctx"), caps.num_ctx, "ctx", c.num_ctx ?? "默认");
+    applyCap($("chip-ctx"), caps.num_ctx, "ctx",
+             c.num_ctx == null ? "默认" : fmtCtxShort(c.num_ctx));
     $("chip-ws").textContent = c.workspace || ".";
     $("sb-meta").textContent = c.workspace || "";
     $("sb-meta").title = c.workspace || "";
     $("set-think").value = c.think || "off";
-    // 不适用时清空，别让禁用的输入框里留个 0 —— 看着像「上下文=0」，
-    // 也容易被误当成当前生效值
-    $("set-ctx").value = caps.num_ctx ? (c.num_ctx ?? 0) : "";
+    // 不适用时下拉显示「不适用」，别让禁用的控件里留个 0 —— 看着像
+    // 「上下文=0」，也容易被误当成当前生效值
+    setCtxValue($("set-ctx"), $("set-ctx-custom"), caps.num_ctx ? (c.num_ctx ?? 0) : 0);
     // 不支持的参数直接禁用，并说明原因，免得人改了半天以为生效了
     setFieldCap("set-think", caps.think, CTX_OFF_HINT);
-    setFieldCap("set-ctx", caps.num_ctx, CTX_OFF_HINT);
+    setCtxCap($("set-ctx"), $("set-ctx-custom"), caps.num_ctx,
+              CTX_OFF_HINT, c.num_ctx ?? 0);
     $("prefs-cap-note").textContent = caps.think
       ? ""
       : "当前是 OpenAI 兼容协议：think / num_ctx 属于 Ollama 原生协议，不会下发。要调它们请切换到 Ollama 模型。";
@@ -1825,7 +2004,11 @@ async function applyConfig() {
   };
   const caps = (state.config && state.config.caps) || {};
   if (caps.think) patch.think = $("set-think").value;
-  if (caps.num_ctx) patch.num_ctx = Number($("set-ctx").value || 0);
+  if (caps.num_ctx) {
+    const ctx = getCtxValue($("set-ctx"), $("set-ctx-custom"));
+    if (ctx === null) return toast(CTX_CUSTOM_HINT, true);
+    patch.num_ctx = ctx;
+  }
   patch.temperature = Number($("set-temp").value || 0.7);
   try {
     await api("/api/config", patch);
@@ -1851,9 +2034,12 @@ function setFieldCap(id, supported, reason) {
   if (!el) return;
   el.disabled = !supported;
   el.title = supported ? "" : reason;
-  // 占位符跟着走：禁用的框里写「0 = 服务端默认」会让人以为还能调
-  if (el.dataset.ph0 === undefined) el.dataset.ph0 = el.placeholder || "";
-  el.placeholder = supported ? el.dataset.ph0 : "不适用";
+  // 占位符跟着走：禁用的框里写「0 = 服务端默认」会让人以为还能调。
+  // select 没有 placeholder（禁用态由 setCtxCap 插入的「不适用」选项负责）
+  if (el.tagName !== "SELECT") {
+    if (el.dataset.ph0 === undefined) el.dataset.ph0 = el.placeholder || "";
+    el.placeholder = supported ? el.dataset.ph0 : "不适用";
+  }
   const field = el.closest(".field");
   if (field) field.classList.toggle("field-off", !supported);
 }
@@ -2251,6 +2437,9 @@ $("btn-mf-cancel").onclick = closeModelForm;
 $("btn-mf-delete").onclick = deleteModel;
 $("mf-provider").onchange = updateMfNote;
 $("mf-host").oninput = updateMfNote;
+// 两个 num_ctx 下拉的选项由同一份预设生成，事件只绑一次
+initCtxControl($("set-ctx"), $("set-ctx-custom"));
+initCtxControl($("mf-ctx"), $("mf-ctx-custom"));
 document.querySelectorAll(".set-tab").forEach((b) => {
   b.onclick = () => switchTab(b.dataset.tab);
 });
