@@ -2125,6 +2125,7 @@ function openModelForm(p) {
   $("mf-temp").value = (p && p.temperature != null) ? p.temperature : 0.7;
   $("mf-repeat-penalty").value = (p && p.repeat_penalty != null) ? p.repeat_penalty : "";
   $("mf-repeat-last-n").value = (p && p.repeat_last_n != null) ? p.repeat_last_n : "";
+  renderRpHint("mf-repeat-penalty", "mf-rp-hint", ((p && p.provider) || "openai") === "ollama");
   $("mf-model-options").innerHTML = "";
   $("mf-probe-result").textContent = "";
   $("mf-probe-result").className = "probe-result";
@@ -2171,6 +2172,7 @@ function updateMfNote() {
   setFieldCap("mf-think", p === "ollama", CTX_OFF_HINT);
   setFieldCap("mf-repeat-penalty", p === "ollama", CTX_OFF_HINT);
   setFieldCap("mf-repeat-last-n", p === "ollama", CTX_OFF_HINT);
+  renderRpHint("mf-repeat-penalty", "mf-rp-hint", p === "ollama");
 }
 
 async function probeModel() {
@@ -2334,6 +2336,7 @@ async function loadConfig() {
     $("set-repeat-last-n").value = c.repeat_last_n ?? "";
     setFieldCap("set-repeat-penalty", caps.repeat_penalty, CTX_OFF_HINT);
     setFieldCap("set-repeat-last-n", caps.repeat_penalty, CTX_OFF_HINT);
+    renderRpHint("set-repeat-penalty", "set-rp-hint", caps.repeat_penalty);
     $("set-steps").value = c.max_steps;
     $("set-confirm").value = c.confirm ? "on" : "off";
     $("set-ws").value = c.workspace || "";
@@ -2346,6 +2349,55 @@ async function loadConfig() {
     toast("加载配置失败: " + e.message, true);
   }
 }
+
+// repeat_penalty 分档提示：不是凭感觉写的阈值，是 qwen35-2b-local 上实测出来的
+// （不改模型、只改这个值，各跑两轮，统计标题/表行/表分隔行/字面 HTML）：
+//   不下发 / 1.05 / 1.1 → 表格完整、粗体正常、零字面 HTML
+//   1.2                 → 偶发用 <br>/<ul> 代替 markdown，表格分隔行时有时无
+//   1.3 以上            → 表格基本塌掉，工具参数开始被污染
+//   1.5                 → 参数里串进 </path><content>（路径变错），一路生成到撑满
+//                         上下文被硬截断 —— 就是「格式没了 + 只有一半」那个现象
+// 原因：惩罚按 token 无差别作用，回看窗口默认只有 64 token，而 markdown 的
+// | 、# 、* 在表格里高频重复，正好被惩罚压制，模型就去借 HTML 标签表达。
+const RP_TIERS = [
+  { max: 1.12, cls: "ok",
+    text: "安全区：实测这一档 markdown 表格、粗体、分隔线都完好，工具参数也不会被污染。" },
+  { max: 1.25, cls: "warn",
+    text: "已到警戒线：实测 1.2 起会偶发用字面 <br>/<ul> 顶替 markdown 标记，表格分隔行时有时无。再往上不建议。" },
+  { max: Infinity, cls: "danger",
+    text: "危险：实测 1.5 时表格塌成字面 HTML、工具参数被污染（路径里串进 </path><content>），生成会一路跑满上下文被截断——表现就是「格式没了、回答只有一半」。退回 1.05–1.1 即可恢复。" },
+];
+
+function renderRpHint(inputId, hintId, supported) {
+  const el = $(hintId);
+  if (!el) return;
+  if (!supported) {
+    el.textContent = "当前模型不是 Ollama 原生协议，这个参数不会下发。";
+    el.className = "drawer-note rp-hint";
+    return;
+  }
+  const raw = $(inputId).value.trim();
+  if (!raw) {
+    el.textContent = "留空 = 不下发，沿用模型自带参数（推荐）。真要压复读，从 1.05 起、每次加 0.05 观察。";
+    el.className = "drawer-note rp-hint";
+    return;
+  }
+  const v = Number(raw);
+  if (!isFinite(v) || v <= 0) {
+    el.textContent = "非法值不会下发。留空即沿用模型自带参数。";
+    el.className = "drawer-note rp-hint warn";
+    return;
+  }
+  if (v <= 1.0) {
+    el.textContent = "1.0 = 关闭重复惩罚（官方语义）。想抑制复读得往 1.05 以上走。";
+    el.className = "drawer-note rp-hint";
+    return;
+  }
+  const tier = RP_TIERS.find((t) => v <= t.max);
+  el.textContent = "当前 " + v + "。" + tier.text;
+  el.className = "drawer-note rp-hint " + tier.cls;
+}
+
 
 // 后端能力比对：页面比后端新时，别让人对着搜索框猜「为什么搜不到」
 function syncFeatureGate(features) {
@@ -3158,6 +3210,12 @@ $("btn-close-settings").onclick = () => {
   closeModelForm();      // 关抽屉时收起表单，下次打开不残留上次编辑的内容
 };
 $("btn-apply").onclick = applyConfig;
+// repeat_penalty：边输边给判断，别等点了「应用」才发现这一档会把 markdown 打散
+$("set-repeat-penalty").oninput = () =>
+  renderRpHint("set-repeat-penalty", "set-rp-hint",
+               !!((state.config && state.config.caps) || {}).repeat_penalty);
+$("mf-repeat-penalty").oninput = () =>
+  renderRpHint("mf-repeat-penalty", "mf-rp-hint", $("mf-provider").value === "ollama");
 // 桌面通知：开关与免打扰都是纯前端偏好（localStorage），即时生效，
 // 不跟「应用偏好」一起提交——那个按钮是写给后端配置的。
 $("set-notify").onchange = async (e) => {

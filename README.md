@@ -141,7 +141,7 @@ python ollama_agent.py --ui          # 同上（--port 同样可用）
 | 模型管理 | 「设置 → 模型管理」两块：**内置**（从 Ollama `/api/tags` 列出本机模型，点一下即切过去；列表走缓存——打开设置零探测秒开，点「刷新」才重新拉取）+ **自定义**（填 `/v1` 地址 + Key + 模型名，接任意 OpenAI 兼容的模型服务端（官方 API、中转服务、vLLM、LM Studio）；可新增/编辑/删除/切换）。「使用中」高亮全局唯一（内置/自定义互斥），切换请求行内转圈反馈。**日常切换请用输入框下方的模型 chip；这里只用来新增 / 编辑那些要填地址和 Key 的配置** |
 | 连通性测试 | 新建自定义模型时先点「测试连通性」：只看 `GET /v1/models`，不花对话费；地址错 / Key 错 / 服务没起 / 路径不对**分开报**，每条都给下一步动作 |
 | 模型配置持久化 | 存在 `~/.ollama-agent/config.json`（`OLLAMA_AGENT_CONFIG` 可改路径）。重启后自动回到上次用的那个模型配置，不用重填地址和 Key；**内置 Ollama 下选中的模型名也单独记住**（顶层 `builtin_model`），进 UI 显示的是上次挑的那个，不是写死的 `qwen3.5:9b`。启动时显式传 `--model` 优先级更高，会盖过这个记忆 |
-| 偏好 | 「设置 → 偏好」：单回合最大工具步数、**执行前确认**、工作空间、**工具与技能启停**、think、num_ctx、temperature、repeat_penalty、repeat_last_n（后五项仅 Ollama 生效，OpenAI 协议下会置灰并说明原因） |
+| 偏好 | 「设置 → 偏好」：单回合最大工具步数、**执行前确认**、工作空间、**工具与技能启停**、think、num_ctx、temperature、repeat_penalty、repeat_last_n（后五项仅 Ollama 生效，OpenAI 协议下会置灰并说明原因）。改 repeat_penalty 时按实测阈值实时分档提示：≤1.1 安全、1.2 警戒、≥1.3 明确说会打散 markdown 和工具参数 |
 | 工具/技能 | 输入框下方「工具」chip 一步切模式：全部 / 只对话 / 纯聊天，或逐项勾选进自定义。关掉的工具**不再下发 schema**，是省上下文的主要手段 |
 | 执行确认 | 写/改/删/联网/命令执行工具（`confirm=True`）执行前弹确认框：**允许 / 本回合全部允许 / 拒绝**；默认开启，5 分钟未确认自动拒绝（fail-safe） |
 | 规划提问 | agent 拿不定主意时调 **`ask_user`** 把方案摆成按钮（最多 6 条，每条一句取舍，可附自由输入），点一下就是答复，它拿着答复继续干。弹窗与「执行确认」明确分开：标题「需要你定一下」、没有「全部允许」——**授权一个危险操作 ≠ 替你做决定**。5 分钟不答按「没答复」继续（既不当同意也不当否决，模型会按最保守的选项走并标注待确认）；本轮被打断则立即收尾。CLI 里列编号让人挑。没有交互通道的场合（脚本 / 子代理）工具会说「不支持，别重试」，不会静默编一个答案 |
@@ -778,6 +778,24 @@ socket 超时语义是「两块数据之间的间隔」而非总时长：默认�
 `repeat_last_n` 默认只看最近 64 token，长段落复读建议调大；`-1` = 整个 `num_ctx`，代价是每步计算变重。
 OpenAI 兼容后端不下发这两个字段，界面会置灰并说明原因。
 
+**实测的安全区间（`qwen35-2b-local:latest`，只改这一个值、各跑两轮）**：
+
+| repeat_penalty | 观察到的现象 |
+| --- | --- |
+| 不下发 / 1.05 / 1.1 | 标题、表格（含分隔行）、粗体、分隔线齐全，零字面 HTML，工具参数合法 |
+| 1.2 | 开始偶发用字面 `<br>`/`<ul>` 顶替 markdown 标记；表格分隔行时有时无 |
+| 1.3 以上 | 表格基本塌掉，生成明显变长、跑题 |
+| 1.5 | 表格完全消失（只剩零星 `|` 行）；`write_file` 的 `path` 参数被污染成 `docs/pln_markdown.txt\n</path>\n<content>…`；一路生成到撑满上下文被硬截断 |
+
+原因是惩罚**按 token 无差别**作用，而默认回看窗口只有 64 token——markdown 的 `|`、`#`、`*`
+在表格里高频重复，正好被压制，模型于是改用 HTML 标签表达；同时为了躲开惩罚它越写越长，
+最后撞上 `num_ctx`（本地模型自带 8192）被截断，表现就是「格式没了 + 回答只有一半」。
+**这是解码参数的作用结果，不是渲染器的问题**——同样一段话在 1.1 下渲染完全正常。
+
+界面上 `repeat_penalty` 现在会随输入实时分档给出结论（安全 / 警戒 / 危险），
+阈值就是上表实测值，不是拍脑袋定的。真要压长文复读，优先走
+「低惩罚 + 大窗口」：`repeat_penalty 1.05–1.1` 配 `repeat_last_n 256`，比单纯调高惩罚安全得多。
+
 **spill：工具输出落盘。** 工具结果超过 `spill_max_chars`（默认 12000，0=关）时全文写入
 `{工作空间}/.ollama-agent/spill/`，上下文里只留头尾摘要 + 取回指引——几千行的 grep/命令输出不再一次性撑爆 context，
 模型需要时再用 read_file 取回全文（`read_file`/`read_long_doc` 的输出豁免，避免套娃；
@@ -934,6 +952,7 @@ python tests/test_ui_reset.py         # 清空/删除对话（Playwright，需�
 python tests/test_stream_retry.py     # 断流分类 + 退避重试 + 半截输出续写（假客户端，离线）
 python tests/test_repeat_guard.py     # 重复工具调用提醒（键序无关/阈值/注入时机）
 python tests/test_repeat_penalty.py   # 重复惩罚参数：默认不下发/精确下发/协议隔离/非法值/持久化往返
+python tests/test_rp_hint.py          # 惩罚值分档提示 UI 冒烟（Playwright：1.05 安全 / 1.2 警戒 / 1.5 危险 / 留空与非法值 / 非 Ollama 置灰）
 python tests/test_builtin_model.py    # 内置模型选择持久化（重启恢复/显式 --model 优先/profile 权威）
 python tests/test_quick_chips.py      # 输入框快捷入口 UI 冒烟（Playwright，含重启后显示所选模型 + 工具策略）
 python tests/test_tool_policy.py      # 工具/技能启停：四模式下发/只对话四件/dispatch 拦截/技能索引联动/持久化

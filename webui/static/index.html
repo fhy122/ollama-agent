@@ -261,6 +261,7 @@
         <input type="number" id="mf-repeat-penalty" step="0.05" min="0" max="2"
                placeholder="留空 = 不下发；建议从 1.1 试起">
       </label>
+      <p class="drawer-note rp-hint" id="mf-rp-hint"></p>
       <label class="field">repeat_last_n（回看窗口）
         <input type="number" id="mf-repeat-last-n" step="1" min="-1"
                placeholder="留空 = 服务端默认 64；0=禁用、-1=整个上下文">
@@ -331,11 +332,12 @@
       <input type="number" id="set-repeat-penalty" step="0.05" min="0" max="2"
              placeholder="留空 = 不下发（用服务端默认）；建议从 1.1 试起">
     </label>
+    <p class="drawer-note rp-hint" id="set-rp-hint"></p>
     <label class="field">repeat_last_n（回看窗口，token 数）
       <input type="number" id="set-repeat-last-n" step="1" min="-1"
              placeholder="留空 = 服务端默认 64；0=禁用、-1=整个上下文">
     </label>
-    <p class="drawer-note">仅抑制模型输出里的文字复读，管不了「同一个工具反复调用」（那由 repeat_guard 提醒处理）。工具调用是 JSON，惩罚值调太高可能破坏参数生成，先小步试 1.1 并用工具命中率 A/B 验证。依据：docs.ollama.com/modelfile#valid-parameters-and-values</p>
+    <p class="drawer-note">仅抑制模型输出里的文字复读，管不了「同一个工具反复调用」（那由 repeat_guard 提醒处理）。依据：docs.ollama.com/modelfile#valid-parameters-and-values</p>
     <!-- 桌面通知：只在没人看页面时弹。开关存 localStorage，不占后端配置——
          换台机器该重新授权一次，本来就不该跟着配置文件跑。 -->
     <div class="drawer-sec">
