@@ -1,18 +1,18 @@
-"""web_search — 联网搜索，双引擎并行：百度 AI 聚合摘要 + Bing/百度常规结果。
+"""web_search — 联网搜索，多引擎并行 + 本地模型综合（元宝式效果）。
 
-路线：
-  1. 百度 AI 总结（Playwright 渲染）：一次搜索即得"AI 总结 N 篇结果"的聚合答案+引用来源，
-     模型可直接引用，无需逐条打开网页。headless 可抓；卡片间歇出现，带自动展开。
-  2. Bing 常规结果（纯 HTTP 解析，快）：cn.bing.com 的 li.b_algo 结果块，质量较高。
-     注意：Bing 对匿名会话会随机发"词典兜底页"（词典/百科顶格）——实测同一 query 时好时坏，
-     真实登录浏览器正常。对策：命中降级页自动重试（同会话 Cookie + 退避）翻到好页。
-     Bing 的 AI 摘要绑定登录态/灰度，headless 抓不到，放弃。
-  3. 百度常规结果：作为补充（质量略逊），与 Bing 去重后并入。
+路线（全并行，尽量走纯 HTTP，浏览器只在“百度 AI 摘要”一路用）：
+  1. Bing 常规结果（纯 HTTP 解析，快）：cn.bing.com 的 li.b_algo 结果块，质量较高。
+     匿名会话会随机发“词典兜底页”/“首词劫持页”——命中降级自动重试翻到好页。
+  2. 百度 AI 总结（Playwright 渲染）：一次搜索即得“AI 总结 N 篇结果”的聚合答案+引用来源；
+     卡片间歇出现，带自动展开。同时取百度常规结果作补充。
+  3. 360 搜索（纯 HTTP，零浏览器，快）：www.so.com，国内可达、来源互补，补充第三路覆盖。
 
-并行：Bing 纯 HTTP 走后台线程，百度 Playwright 留主线程（同步 API 有线程亲和），
-总耗时 ≈ 百度一条，Bing 零额外等待。
+综合（元宝效果的关键）：
+  抓完全部来源后，调用 ctx.client（本地模型）把来源综合成一段带 [n] 引用的中文答案，
+  放在最前；下方附“检索来源清单”（编号 + 标题 + 链接 + 摘要）供核验。
+  这一步可关（synthesize=false）——关掉就只返回来源清单，由主模型综合，省一次本地推理。
 
-engine 参数：auto/both(默认,双引擎全量) | baidu | bing
+engine 参数：auto/both(默认,三引擎全量) | baidu | bing | so(=360) | 360
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 BING_URL = "https://cn.bing.com/search?q={q}&setmkt=zh-CN&setlang=zh-hans"
 BAIDU_URL = "https://www.baidu.com/s?ie=UTF-8&wd={q}"
+SO360_URL = "https://www.so.com/s?q={q}"
 
 # 百度 AI 卡片识别标记（任一命中即认为是 AI 总结卡）
 _BAIDU_AI_JS = """() => {
@@ -209,6 +210,89 @@ def _search_bing(query: str, max_results: int, attempts: int = 3) -> list[tuple[
     return last
 
 
+# ---------------- 360 搜索（纯 HTTP，零浏览器） ----------------
+
+_SO360_JAR = http.cookiejar.CookieJar()
+_SO360_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_SO360_JAR))
+_SO360_PRIMED = False
+
+
+def _resolve_so360_link(url: str) -> str:
+    """so.com/link?m= 跳转链接 → 真实 URL。
+
+    360 这类链接返回 200 + JS 跳转（window.location.replace("真实URL")），并非 HTTP 302，
+    所以要从返回体提取真实地址；提取失败/异常则保留原链。
+    """
+    if "so.com/link" not in url:
+        return url
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": UA, "Referer": "https://www.so.com/"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            body = r.read(2000).decode("utf-8", "replace")
+        m = re.search(r'window\.location(?:\.replace)?\s*\(\s*"([^"]+)"\s*\)', body)
+        if not m:
+            m = re.search(r'content="0;URL=[\'"]?([^\'"]+)', body)
+        if m:
+            real = m.group(1)
+            if real.startswith("http"):
+                return real
+    except Exception:
+        pass
+    return url
+
+
+def _search_360(query: str, max_results: int) -> list[tuple[str, str, str]]:
+    """纯 HTTP 抓 www.so.com（360 搜索）。国内可达、零浏览器、快，补充第三路来源。
+
+    结果块 <li class="res-list">（内含内联 <style> 噪音需剥离）；
+    标题外链为 https://www.so.com/link?m=... 跳转，解析后换成真实地址（失败回退原链），
+    摘要优先取 res-desc，否则用块内可见文本兜底。
+    """
+    global _SO360_PRIMED
+    if not _SO360_PRIMED:
+        _SO360_PRIMED = True
+        try:    # 先逛首页养 cookie
+            _SO360_OPENER.open(
+                urllib.request.Request("https://www.so.com/",
+                                      headers={"User-Agent": UA}), timeout=15).read()
+        except Exception:
+            pass
+
+    url = SO360_URL.format(q=urllib.parse.quote_plus(query))
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA,
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    })
+    with _SO360_OPENER.open(req, timeout=15) as resp:
+        page_html = resp.read().decode("utf-8", "replace")
+
+    # 剥离内联 style 噪音，按结果块解析
+    page_html = re.sub(r"<style[^>]*>.*?</style>", "", page_html, flags=re.S)
+    blocks = re.findall(r'<li class="res-list".*?</li>', page_html, re.S)
+    out: list[tuple[str, str, str]] = []
+    for b in blocks:
+        m = re.search(
+            r'<a[^>]*href="(https?://www\.so\.com/link\?m=[^"]+)"[^>]*>(.*?)</a>', b, re.S)
+        if not m:
+            continue
+        href = _resolve_so360_link(m.group(1))  # 跳转解析为真实地址
+        title = _clean(m.group(2))
+        if not title:
+            continue
+        dm = re.search(r'class="[^"]*res-desc[^"]*"[^>]*>(.*?)</(?:div|p|span)>', b, re.S)
+        snip = _clean(dm.group(1)) if dm else ""
+        if not snip:
+            bt = _clean(b).replace(title, "", 1)
+            snip = re.sub(r"^(AI正在分析|导航|设置|反馈)[^\n]*", "", bt).strip()
+        # 清理摘要里的「日期 - 」前缀（360 在摘要前塞了来源日期）
+        snip = re.sub(r"^\s*\d{4}年\d{1,2}月\d{1,2}日\s*[–-]\s*", "", snip).strip()
+        out.append((title, href, snip[:300]))
+        if len(out) >= max_results:
+            break
+    return out
+
+
 # ---------------- 百度（Playwright：AI 总结 + 结果） ----------------
 
 def _resolve_baidu_link(url: str) -> str:
@@ -337,65 +421,100 @@ def _looks_degraded(query: str, results: list) -> bool:
     return _bing_is_junk(query, results)
 
 
-def _dedup(baidu_results: list[tuple[str, str, str]],
-           bing_results: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
-    """百度结果里去掉与 Bing 重复的（按 URL 主干比对），减少冗余。"""
-    def key(u: str) -> str:
-        u = (u or "").split("#")[0].rstrip("/")
-        u = re.sub(r"^https?://(www\.)?", "", u)
-        return re.sub(r"[?&](utm_\w+|from|wd|eqid)=\w+", "", u)
+def _url_key(u: str) -> str:
+    """URL 主干（去 fragment/utm 等/尾斜杠），用于跨引擎去重。
 
-    seen = {key(u) for _, u, _ in bing_results}
-    out = []
-    for t, u, s in baidu_results:
-        k = key(u)
-        if k and k in seen:
-            continue
-        seen.add(k)
-        out.append((t, u, s))
-    return out
+    顺序：先去 fragment → 去协议头 → 剔除 utm/from/wd/eqid 追踪参数 → 最后去尾斜杠。
+    尾斜杠必须放在参数剔除之后，否则 ?utm=1 被吃掉后残留的斜杠会让同类 URL 判为不同。
+    """
+    u = (u or "").split("#")[0]
+    u = re.sub(r"^https?://(www\.)?", "", u)
+    u = re.sub(r"[?&](utm_\w+|from|wd|eqid)=\w+", "", u)
+    return u.rstrip("/")
+
+
+def _synthesize(query: str, master: list[dict], ctx: ToolContext) -> str | None:
+    """用本地模型把来源综合成带 [n] 引用的中文答案。失败/无客户端返回 None。"""
+    if ctx.client is None:
+        return None
+    # 只喂前 10 条 + 摘要截 200 字，控制上下文与耗时
+    lines = []
+    for i, s in enumerate(master[:10], 1):
+        lines.append(f"[{i}] {s['title']}\nURL: {s['url']}\n摘要: {s['snippet'][:200]}")
+    src_text = "\n\n".join(lines)
+    prompt = (
+        f"你是搜索综合助手。用户问题：{query}\n\n"
+        f"以下是检索到的来源（编号对应引用，可能来自不同搜索引擎）：\n{src_text}\n\n"
+        "要求：\n"
+        "1. 用简体中文直接回答，先给结论、再分点展开，条理清晰；\n"
+        "2. 在每条关键事实后用 [n] 标注其来源编号（n 对应上方来源编号）；\n"
+        "3. 只基于上述来源作答，不得编造来源以外的信息或来源链接；"
+        "来源不足以回答时，明确说明“现有来源不足以确认”；\n"
+        "4. 不要重复罗列来源链接（链接会在下方单独给出）；不要输出“根据来源”之类的废话开头。"
+    )
+    try:
+        resp = ctx.client.chat(
+            [{"role": "user", "content": prompt}], tools=None, cancel=ctx.cancel)
+        if resp.get("error") or resp.get("cancelled"):
+            return None
+        return (resp.get("content") or "").strip() or None
+    except Exception:
+        return None
 
 
 @tool(
     name="web_search",
     description=(
-        "联网搜索（双引擎并行：Bing 结果 + 百度AI总结/百度结果）。"
-        "输出顺序：AI聚合摘要（已综合多篇结果并附引用来源，摘要足够可直接回答，无需逐条 browse_url）"
-        "→ Bing 结果（质量较高）→ 百度结果（补充）。需要原文细节才用 browse_url。"
-        "查最新信息、事实类问题先用这个。"),
+        "联网搜索（多引擎并行：Bing 结果 + 百度AI总结/百度结果 + 360搜索结果），"
+        "并用本地模型把来源综合成【带 [n] 引用的中文答案】放最前，下方附编号来源清单（标题+链接+摘要）供核验。"
+        "效果类似 AI 搜索（元宝式）：搜得多、快、有效信息密度高。"
+        "默认 synthesize=true 会多花一次本地推理做综合；想更快可设 synthesize=false，"
+        "则返回来源清单，由你基于来源综合并标注引用。"
+        "engine: auto/both(默认,三引擎) | baidu | bing | so(=360) | 360。"
+        "查最新信息、事实类问题先用这个；需要原文细节再 browse_url 对应链接。"),
     parameters={
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "搜索关键词，可用中英文"},
-            "max_results": {"type": "integer", "description": "每个引擎常规结果最多条数，默认 6"},
+            "max_results": {"type": "integer", "description": "每个引擎常规结果最多条数，默认 8"},
             "engine": {
                 "type": "string",
-                "description": "搜索通道：auto/both(默认,双引擎全量) | baidu | bing",
-                "enum": ["auto", "both", "baidu", "bing"],
+                "description": "搜索通道：auto/both(默认,三引擎全量) | baidu | bing | so(=360) | 360",
+                "enum": ["auto", "both", "baidu", "bing", "so", "360"],
+            },
+            "synthesize": {
+                "type": "boolean",
+                "description": "是否用本地模型综合成带引用的答案（元宝效果）。true(默认)=综合；false=只返回来源清单，更快",
             },
         },
         "required": ["query"],
     },
     confirm=True,
 )
-def web_search(ctx: ToolContext, query: str, max_results: int = 6,
-               engine: str = "auto") -> ToolResult:
-    max_results = max(1, int(max_results or 6))
+def web_search(ctx: ToolContext, query: str, max_results: int = 8,
+               engine: str = "auto", synthesize: bool = True) -> ToolResult:
+    max_results = max(1, int(max_results or 8))
     engine = (engine or "auto").lower()
     if engine == "both":
         engine = "auto"
+    if engine == "360":
+        engine = "so"
     want_bing = engine in ("auto", "bing")
     want_baidu = engine in ("auto", "baidu")
+    want_360 = engine in ("auto", "so")
 
     sections: list[str] = []
     errors: list[str] = []
 
-    # Bing 纯 HTTP → 后台线程先跑；百度 Playwright 留主线程（线程亲和）
+    # —— 并行抓取：Bing / 360 走后台线程（纯 HTTP），百度留主线程（Playwright 线程亲和）——
+    futures: list = []
+    pool = ThreadPoolExecutor(max_workers=2)
     bing_results: list[tuple[str, str, str]] = []
-    bing_future = None
+    so360_results: list[tuple[str, str, str]] = []
     if want_bing:
-        pool = ThreadPoolExecutor(max_workers=1)
-        bing_future = pool.submit(_search_bing, query, max_results)
+        futures.append(("bing", pool.submit(_search_bing, query, max_results)))
+    if want_360:
+        futures.append(("360", pool.submit(_search_360, query, max_results)))
 
     baidu_ai = None
     baidu_results: list[tuple[str, str, str]] = []
@@ -408,35 +527,71 @@ def web_search(ctx: ToolContext, query: str, max_results: int = 6,
         except Exception as e:
             errors.append(f"百度: {type(e).__name__}: {str(e)[:120]}")
 
-    if bing_future is not None:
+    for name, fut in futures:
         try:
-            bing_results = bing_future.result(timeout=60)
+            res = fut.result(timeout=60)
         except Exception as e:
-            errors.append(f"Bing: {type(e).__name__}: {str(e)[:120]}")
-        finally:
-            pool.shutdown(wait=False)
+            errors.append(f"{name.upper()}: {type(e).__name__}: {str(e)[:120]}")
+            res = []
+        if name == "bing":
+            bing_results = res
+        else:
+            so360_results = res
+    pool.shutdown(wait=False)
 
-    # 百度结果与 Bing 去重后作为补充
-    baidu_results = _dedup(baidu_results, bing_results)
+    # —— 跨引擎去重，拼成统一来源清单（编号即引用编号）——
+    master: list[dict] = []
+    seen: set[str] = set()
+    for eng, results in (("Bing", bing_results),
+                         ("百度", baidu_results),
+                         ("360", so360_results)):
+        for (t, u, s) in results:
+            k = _url_key(u)
+            if k and k in seen:
+                continue
+            if k:
+                seen.add(k)
+            master.append({"engine": eng, "title": t, "url": u, "snippet": s})
 
-    if baidu_ai:
-        sections.append(_fmt_ai(baidu_ai))
-    if bing_results:
-        sec = _fmt_results("Bing", bing_results)
-        if _looks_degraded(query, bing_results):
-            sec = ("[提示: 该查询命中 Bing 匿名降级页（词典/百科顶格或结果跑题，自动重试仍未翻到好页），"
-                   "此块质量差仅供参考，请优先看上方 AI 摘要与下方百度结果]\n" + sec)
-        sections.append(sec)
-    if baidu_results:
-        sections.append(_fmt_results("百度（补充）", baidu_results))
-
-    if not sections:
+    if not master and not baidu_ai:
         msg = f"[搜索] 「{query}」全部通道失败" + (f"：{'; '.join(errors)}" if errors else "")
         return ToolResult(msg + "。不要编造结果，如实告知用户搜索失败。")
 
+    # —— 综合（元宝效果核心）——
+    synth = None
+    if synthesize and master:
+        synth = _synthesize(query, master, ctx)
+
+    # —— 输出：综合答案（最前）→ 来源清单 → 百度AI卡(若有) → 提示 ——
+    if synth:
+        sections.append(
+            f"[AI 综合回答 · 本地模型综合自 {len(master)} 个来源]\n{synth}")
+    elif synthesize and ctx.client is None:
+        sections.append(
+            "[提示] 当前环境无可用模型客户端，跳过综合；已返回来源清单，请基于来源综合并标注引用。")
+    elif not synthesize:
+        sections.append(
+            "[提示] 未启用综合(synthesize=false)，已返回来源清单，请基于来源综合并标注引用。")
+
+    src_lines = [f"[检索来源 · 共 {len(master)} 条]"]
+    for i, s in enumerate(master, 1):
+        src_lines.append(
+            f"[{i}] ({s['engine']}) {s['title']}\n    {s['url']}\n    {s['snippet']}")
+    sections.append("\n".join(src_lines))
+
+    if baidu_ai:
+        sec = _fmt_ai(baidu_ai)
+        if synth is None:
+            sec = ("[提示: 百度AI总结卡已附在下方来源清单之外，可优先参考]\n" + sec)
+        sections.append(sec)
+    elif bing_results and _looks_degraded(query, bing_results):
+        sections.append(
+            "[提示: Bing 命中匿名降级页（词典/百科顶格或结果跑题，自动重试仍未翻到好页），"
+            "此路质量差仅供参考，请优先看上方综合与来源清单]")
+
     sections.append(
-        "提示: AI聚合摘要已综合多篇内容并附来源，摘要足够时直接引用（注明来源）即可；"
-        "需要原文细节再 browse_url 对应链接。")
+        "提示: 综合回答由本地模型基于上述来源生成，引用编号对应下方来源清单；"
+        "来源不足处模型会说明。核实重要事实请点开对应链接，需要原文细节再 browse_url。")
     if errors:
         sections.append(f"[通道降级] {'; '.join(errors)}")
-    return ToolResult("\n\n".join(sections))
+    return ToolResult("\n".join(sections))
