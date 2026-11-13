@@ -117,7 +117,7 @@
       <div id="queue-dock"></div>
       <div class="composer-shell">
         <div id="palette" class="palette hidden"></div>
-        <!-- 快捷设置浮层：模型 / 权限 / 工作空间，点输入框下方的 chip 就地改 -->
+        <!-- 快捷设置浮层：模型 / 权限 / 工具 / 思考 / 上下文，点输入框下方的 chip 就地改 -->
         <div id="quick-pop" class="quick-pop hidden" role="dialog" aria-label="快捷设置"></div>
         <div class="composer">
           <textarea id="input" rows="1" placeholder="输入消息，Enter 发送 · Shift+Enter 换行 · / 技能 · @ 文件"></textarea>
@@ -139,8 +139,9 @@
               <span class="send-label">发送</span>
             </button>
           </div>
-          <!-- 输入框下方的快捷入口：切换模型、执行权限、工作空间都在这里，
-               只有「配置自定义模型」才需要进设置抽屉的完整表单 -->
+          <!-- 输入框下方的快捷入口：模型 / 执行权限 / 工具 / 思考模式都在这里，
+               只有「配置自定义模型」才需要进设置抽屉的完整表单。
+               工作空间不常切，收到「设置 → 偏好」里，不占这一行。 -->
           <div class="composer-quick">
             <button class="quick-chip" id="quick-model" title="选择模型 · 思考模式 · 上下文窗口">
               <span class="qc-ico"><svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></span>
@@ -157,9 +158,14 @@
               <span class="qc-label" id="quick-tools-label">全部</span>
               <span class="qc-caret"><svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             </button>
-            <button class="quick-chip" id="quick-ws" title="工作空间目录（相对路径的根）">
-              <span class="qc-ico"><svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
-              <span class="qc-label" id="quick-ws-label">.</span>
+            <button class="quick-chip" id="quick-think" title="思考模式（仅 Ollama 原生协议）">
+              <span class="qc-ico"><svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M9.5 18.5h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.4.3.6.8.6 1.3v.4h6v-.4c0-.5.2-1 .6-1.3A6 6 0 0 0 12 3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="qc-label" id="quick-think-label">不思考</span>
+              <span class="qc-caret"><svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            </button>
+            <button class="quick-chip" id="quick-ctx" title="上下文窗口（num_ctx）">
+              <span class="qc-ico"><svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="qc-label" id="quick-ctx-label">默认上下文</span>
               <span class="qc-caret"><svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             </button>
             <span class="qc-spacer"></span>
@@ -380,6 +386,7 @@
         </div>
       </div>
       <div class="preview-actions">
+        <button class="ghost sm" id="pv-add">加入上下文</button>
         <button class="ghost sm" id="pv-copy" hidden>复制内容</button>
         <button class="ghost sm" id="pv-download">下载</button>
         <button class="icon-btn" id="pv-close" aria-label="关闭预览">

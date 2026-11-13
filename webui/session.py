@@ -355,6 +355,18 @@ class AgentSession:
             saved = str(self.user_cfg.get("builtin_model") or "").strip()
             if saved and not getattr(self.cfg, "_model_explicit", False):
                 self.cfg.model = saved
+            # think 同理：内置条目没有 profile 可存，落在 ui 段。
+            # 不恢复的话，在思考 chip 上选完、刷新一下就回到 off。
+            think = (self.user_cfg.get("ui") or {}).get("think")
+            if think in THINK_VALUES and not getattr(self.cfg, "_think_explicit", False):
+                self.cfg.think = think
+            # 上下文窗口同属「常调参数」：只存了不走恢复，刷新一次就白调了。
+            # 0 = 用户明确选了「服务端默认」（要把 num_ctx 置空），
+            # 键不存在 = 从没调过，保留启动参数给的值。
+            ctx = (self.user_cfg.get("ui") or {}).get("num_ctx")
+            if (isinstance(ctx, int) and not isinstance(ctx, bool)
+                    and not getattr(self.cfg, "_ctx_explicit", False)):
+                self.cfg.num_ctx = None if ctx == 0 else min(ctx, MAX_CTX)
             return
         prof = self.config_store.get_profile(self.user_cfg, pid)
         if not prof:
@@ -1034,6 +1046,12 @@ class AgentSession:
         ui["confirm"] = self.confirm
         ui["max_steps"] = self.cfg.max_steps
         ui["workspace"] = str(self.workspace)
+        # think / num_ctx 只在「当前生效的是内置 Ollama」时记：
+        # 自定义配置自己有 profile 存这两项，再往 ui 段写一份，
+        # 下次切回内置时就会把中转站的参数串过来。
+        if pid == BUILTIN_ID:
+            ui["think"] = self.cfg.think or ""
+            ui["num_ctx"] = self.cfg.num_ctx or 0
         # 工具/技能策略：重启后仍生效。不写这三项的话，用户关掉一堆工具、
         # 第二天打开又全回来了，会以为「设置没保存」。
         ui["tool_mode"] = normalize_mode(getattr(self.cfg, "tool_mode", "all"))

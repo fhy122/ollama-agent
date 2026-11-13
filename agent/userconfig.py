@@ -128,6 +128,9 @@ class ConfigStore:
             # 但模型名得单独记一笔，否则重启永远回到写死的 DEFAULT_MODEL。
             "builtin_model": "",
             "ui": {"confirm": True, "max_steps": 12, "workspace": "",
+                   # 内置 Ollama 没有 profile 可存 think，单独记一笔；
+                   # 空串 = 没存过（沿用启动参数），合法值在恢复时按 THINK_VALUES 校验
+                   "think": "",
                    # 工具/技能策略存在 ui 段：它属于「我用这套工具的习惯」，
                    # 换模型不该把它一起重置（同 confirm / workspace）
                    "tool_mode": "all", "tools_enabled": [], "skills_disabled": []},
@@ -179,21 +182,32 @@ class ConfigStore:
             active = BUILTIN_ID       # 指不到就回内置，不留悬空引用
 
         ui = data.get("ui") if isinstance(data.get("ui"), dict) else {}
+        ui_out = {
+            "confirm": bool(ui.get("confirm", True)),
+            "max_steps": int(ui.get("max_steps") or 12),
+            "workspace": str(ui.get("workspace") or ""),
+            # 内置 Ollama 没有 profile 可存 think，单独记一笔；
+            # 空串 = 没存过（沿用启动参数），合法值在恢复时按 THINK_VALUES 校验
+            "think": str(ui.get("think") or ""),
+            # 旧配置文件没有这三项 → 默认「全部启用」，行为与旧版一致
+            "tool_mode": normalize_mode(ui.get("tool_mode")),
+            "tools_enabled": split_names(ui.get("tools_enabled")),
+            "skills_disabled": split_names(ui.get("skills_disabled")),
+        }
+        # num_ctx 不给默认值：键不存在 = 从没调过（保留启动参数的 64K），
+        # 0 = 用户明确选了「服务端默认」。给个默认 0 会把老配置悄悄改成不传 num_ctx。
+        if "num_ctx" in ui:
+            try:
+                ui_out["num_ctx"] = max(0, int(ui["num_ctx"]))
+            except (TypeError, ValueError):
+                pass      # 手改坏的配置当没存过，别让一个笔误卡住启动
         return {
             "version": VERSION,
             "active": active,
             "profiles": profiles,
             # 旧配置文件里没有这个字段 → 空串（沿用启动默认模型），不凭空造模型名
             "builtin_model": str(data.get("builtin_model") or "").strip(),
-            "ui": {
-                "confirm": bool(ui.get("confirm", True)),
-                "max_steps": int(ui.get("max_steps") or 12),
-                "workspace": str(ui.get("workspace") or ""),
-                # 旧配置文件没有这三项 → 默认「全部启用」，行为与旧版一致
-                "tool_mode": normalize_mode(ui.get("tool_mode")),
-                "tools_enabled": split_names(ui.get("tools_enabled")),
-                "skills_disabled": split_names(ui.get("skills_disabled")),
-            },
+            "ui": ui_out,
         }
 
     # ---------- 写 ----------

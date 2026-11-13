@@ -28,6 +28,10 @@ from agent.console import color
 
 # 心跳间隔（秒）。要足够小才显得「活着」，又不能太密把流刷爆。
 _WAIT_TICK_SEC = 1.0
+# 判定「这段静默够不够报一次」的门槛。留 10% 容差：Event.wait(1.0) 在
+# Windows/负载下会提前几毫秒返回，若严格要求 idle >= 1.0，那一轮就被跳过，
+# 心跳周期悄悄退化成 2 秒（用户看到的就是「卡住两秒才动一下」）。
+_WAIT_MIN_IDLE = _WAIT_TICK_SEC * 0.9
 
 # TCP 连接 + TLS 握手的预算（秒）。读流的超时另算（cfg.timeout，可长达半小时，
 # 因为长回答的块间隔本来就可能很大）。线上实测（py-spy 抓栈定位）：
@@ -456,7 +460,7 @@ class ChatClient:
                 if not on_wait:
                     continue
                 idle = _time.time() - last_activity[0]
-                if idle < _WAIT_TICK_SEC:
+                if idle < _WAIT_MIN_IDLE:
                     continue
                 try:
                     on_wait(_time.time() - t_start, progress[0])

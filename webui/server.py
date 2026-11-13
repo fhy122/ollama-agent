@@ -128,6 +128,50 @@ def _search_files(ws: Path, q: str, limit: int = 20) -> list[dict]:
     return out
 
 
+MAX_DIR_ENTRIES = 500
+
+
+def _list_dir(ws: Path, rel: str = "", limit: int = MAX_DIR_ENTRIES) -> dict:
+    """列出某个目录的直接子项（目录在前、文件在后），rel="" 为工作空间根。
+
+    只列一层而不是递归：工作空间可能就是整个仓库，一次 rglob 全量返回既慢、
+    又没法在侧栏里展开收拢。子目录等用户点开再拉（懒加载）。
+
+    越界（`../`、绝对路径、软链接跳到工作空间外）一律返回空列表 —— 这是
+    文件系统边界，不是「搜不到」，但也别把路径拼进错误信息里让前端显示。
+    """
+    base = ws.resolve()
+    rel_norm = (rel or "").strip().replace("\\", "/").strip("/")
+    target = (base / rel_norm).resolve() if rel_norm else base
+    if target != base and base not in target.parents:
+        return {"path": rel_norm, "entries": [], "error": "路径越界"}
+    if not target.is_dir():
+        return {"path": rel_norm, "entries": [], "error": "不是目录"}
+
+    dirs: list[dict] = []
+    files: list[dict] = []
+    try:
+        for p in target.iterdir():
+            if p.name in _SKIP_DIRS:
+                continue
+            try:
+                is_dir = p.is_dir()
+            except OSError:      # 断链 / 权限不足：跳过，别让整层失败
+                continue
+            item = {"name": p.name,
+                    "path": f"{rel_norm}/{p.name}" if rel_norm else p.name,
+                    "dir": is_dir}
+            (dirs if is_dir else files).append(item)
+    except OSError:
+        return {"path": rel_norm, "entries": [], "error": "读取失败"}
+
+    dirs.sort(key=lambda i: i["name"].lower())
+    files.sort(key=lambda i: i["name"].lower())
+    entries = dirs + files
+    return {"path": rel_norm, "entries": entries[:limit],
+            "truncated": len(entries) > limit}
+
+
 def _json_body(handler: BaseHTTPRequestHandler) -> dict:
     n = int(handler.headers.get("Content-Length") or 0)
     if n <= 0:
@@ -332,14 +376,21 @@ def make_handler(app: "WebUIApp"):
 
         # ---------- 基础应答 ----------
 
+        # 浏览器关标签页 / 取消请求时，写回包会抛这几个异常。这是正常事件，
+        # 让它冒到 socketserver 会打一整页回溯（看着像服务出错了），静默即可。
+        _CLIENT_GONE = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)
+
         def send_json(self, obj, code=200):
             data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+            except self._CLIENT_GONE:
+                pass
 
         def send_static(self, rel: str):
             path = (STATIC_DIR / rel).resolve()
@@ -348,12 +399,15 @@ def make_handler(app: "WebUIApp"):
                 return
             ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
             data = path.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(data)
+            except self._CLIENT_GONE:
+                pass
 
         # ---------- 路由 ----------
 
@@ -398,6 +452,12 @@ def make_handler(app: "WebUIApp"):
                 kw = unquote(m.group(1)) if m else ""
                 self.send_json({"q": kw,
                                 "results": app.session.search_sessions(kw)})
+            elif path == "/api/files/tree":
+                q = (urlparse(self.path).query or "")
+                m = re.search(r"(?:^|&)path=([^&]*)", q)
+                from urllib.parse import unquote
+                self.send_json(_list_dir(app.session.workspace,
+                                        unquote(m.group(1)) if m else ""))
             elif path == "/api/files":
                 q = (urlparse(self.path).query or "")
                 m = re.search(r"(?:^|&)q=([^&]*)", q)

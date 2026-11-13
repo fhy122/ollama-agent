@@ -3,18 +3,21 @@
 运行：python tests/test_quick_chips.py
 
 判据（写功能的同时写「怎么才算对」）：
-  1. 三个 chip 都在，模型 chip 的文字来自 /api/config 的当前生效模型；
+  1. 五个 chip 都在（模型 / 权限 / 工具 / 思考 / 上下文），模型 chip 的文字来自
+     /api/config 的当前生效模型；
   2. 点模型 chip 弹出的浮层里，模型列表 / 思考模式 / 上下文窗口 /
      「配置自定义模型」入口齐全；
   3. 权限开关切换后后端 cfg.confirm 真的翻转，chip 文字跟着变；
-  4. 工作空间应用后后端 workspace 真的变；
-  5. Esc 能关闭浮层，且整轮没有 JS 运行时错误；
-  6. 走真实 HTTP 切换模型 → 落盘 → 用同一配置文件新建一个 WebUIApp
+  4. 思考 chip 选一档 → 后端 cfg.think 真的变，chip 显示短标签；
+  5. 上下文 chip 选预设档 → cfg.num_ctx 是精确 token 数；自定义输入回车生效，
+     非法值（<512）只报错、不改后端；
+  6. Esc 能关闭浮层，且整轮没有 JS 运行时错误；
+  7. 走真实 HTTP 切换模型 → 落盘 → 用同一配置文件新建一个 WebUIApp
      （模拟重启）→ 页面上模型 chip 显示的是上次选中的那个，不是启动默认值；
-  7. 工具 chip 切「只对话」→ 后端真的只下发四个工具 schema；
-  8. 单独取消一个勾选 → 自动切「自定义」，后端白名单同步；
-  9. 偏好抽屉里的工具清单与当前策略一致；
- 10. 重启后工具策略仍在。
+  8. 工具 chip 切「只对话」→ 后端真的只下发四个工具 schema；
+  9. 单独取消一个勾选 → 自动切「自定义」，后端白名单同步；
+ 10. 偏好抽屉里的工具清单与当前策略一致；
+ 11. 重启后工具策略仍在。
 """
 from __future__ import annotations
 
@@ -81,8 +84,9 @@ def main():
             page.wait_for_function(
                 "document.getElementById('quick-model-name').textContent.trim() !== '…'")
 
-            # 1. 三个 chip 存在，模型名来自后端而不是写死的常量
-            for cid in ("quick-model", "quick-perm", "quick-ws"):
+            # 1. 五个 chip 都在，模型名来自后端而不是写死的常量
+            for cid in ("quick-model", "quick-perm", "quick-tools",
+                        "quick-think", "quick-ctx"):
                 assert page.locator("#" + cid).count() == 1, cid
             live = page.evaluate(
                 "async () => (await (await fetch('/api/config')).json()).model")
@@ -138,16 +142,37 @@ def main():
             assert app1.session.confirm != before, "confirm 没被后端真的改掉"
             print(f"  ok  权限开关：confirm {before} → {app1.session.confirm}")
 
-            # 4. 工作空间真的改到后端
-            ws2 = _TMP / "ws2"
-            ws2.mkdir(exist_ok=True)
-            page.click("#quick-ws")
-            page.fill("#qp-ws-input", str(ws2))
-            page.click('[data-qp="ws-apply"]')
+            # 4. 思考 chip：选一档 → 后端 cfg.think 真的变，chip 显示短标签
+            page.click("#quick-think")
+            page.wait_for_selector('#quick-pop [data-qp="think-pick"]')
+            page.click('[data-qp="think-pick"][data-value="high"]')
             page.wait_for_function(
-                "document.getElementById('quick-ws-label').textContent.includes('ws2')")
-            assert Path(app1.session.workspace).resolve() == ws2.resolve()
-            print(f"  ok  工作空间：{app1.session.workspace}")
+                "document.getElementById('quick-think-label').textContent.includes('高')")
+            assert app1.session.cfg.think == "high", app1.session.cfg.think
+            print(f"  ok  思考模式：cfg.think = {app1.session.cfg.think}")
+
+            # 5. 上下文 chip：预设档 → 精确 token 数；自定义 → 输入值；非法值不改后端
+            page.click("#quick-think")          # 再点同一 chip 收起，避免点穿
+            page.click("#quick-ctx")
+            page.wait_for_selector('#quick-pop [data-qp="ctx-pick"]')
+            page.click('[data-qp="ctx-pick"][data-value="32768"]')
+            page.wait_for_function(
+                "document.getElementById('quick-ctx-label').textContent.trim() === '32K'")
+            assert app1.session.cfg.num_ctx == 32768, app1.session.cfg.num_ctx
+            print(f"  ok  上下文预设档：num_ctx = {app1.session.cfg.num_ctx}")
+
+            page.fill('[data-qp="ctx-custom-input"]', "12288")
+            page.press('[data-qp="ctx-custom-input"]', "Enter")
+            page.wait_for_function(
+                "document.getElementById('quick-ctx-label').textContent.trim() === '12K'")
+            assert app1.session.cfg.num_ctx == 12288, app1.session.cfg.num_ctx
+            print(f"  ok  上下文自定义值：num_ctx = {app1.session.cfg.num_ctx}")
+
+            page.fill('[data-qp="ctx-custom-input"]', "100")
+            page.press('[data-qp="ctx-custom-input"]', "Enter")
+            page.wait_for_selector(".toast.err")
+            assert app1.session.cfg.num_ctx == 12288, "非法值被写进后端了"
+            print("  ok  上下文非法值（<512）只报错，后端仍是 12288")
             page.keyboard.press("Escape")
 
             # 6. 真实 HTTP 切模型 → 落盘 → 模拟重启
@@ -156,6 +181,11 @@ def main():
             raw = json.loads(cfg_path.read_text(encoding="utf-8"))
             assert raw.get("builtin_model") == chosen, raw
             print(f"  ok  切换已落盘：builtin_model={chosen}")
+            # 常调参数也得落盘，否则刷新一次就白调（契约见 session._sync_user_cfg）
+            raw_ui = raw.get("ui") or {}
+            assert raw_ui.get("think") == "high", raw_ui
+            assert raw_ui.get("num_ctx") == 12288, raw_ui
+            print(f"  ok  常调参数已落盘：think={raw_ui['think']} ctx={raw_ui['num_ctx']}")
 
             httpd2, port2, app2 = _serve(workspace)
             assert app2.session.cfg.model == chosen, \
@@ -207,12 +237,18 @@ def main():
             httpd3, port3, app3 = _serve(workspace)
             assert app3.session.cfg.tool_mode == "custom", app3.session.cfg.tool_mode
             assert "browse_url" not in app3.session.cfg.tools_enabled
+            # 思考 / 上下文是常调参数，重启后必须还是上次选的那档
+            assert app3.session.cfg.think == "high", app3.session.cfg.think
+            assert app3.session.cfg.num_ctx == 12288, app3.session.cfg.num_ctx
+            print("  ok  重启后思考模式与上下文窗口仍是 high / 12288")
             page3 = browser.new_page()
             page3.on("pageerror", lambda e: js_errors.append(str(e)))
             page3.goto(f"http://127.0.0.1:{port3}/")
             page3.wait_for_function(
                 "document.getElementById('quick-tools-label').textContent.includes('自定义')")
-            print("  ok  重启后仍显示上次的工具策略")
+            assert page3.inner_text("#quick-think-label").strip() == "思考·高"
+            assert page3.inner_text("#quick-ctx-label").strip() == "12K"
+            print("  ok  重启后 chip 显示上次的工具策略 / 思考档 / 上下文档")
 
             assert not js_errors, f"页面有 JS 运行时错误：{js_errors}"
             print("  ok  无 JS 运行时错误")

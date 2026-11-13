@@ -94,3 +94,59 @@ def test_normalize_strips_builtin_model(tmp_path):
     st.save({"version": 1, "active": uc.BUILTIN_ID, "profiles": [],
              "builtin_model": "  qwen2.5:7b  ", "ui": {}})
     assert st.load()["builtin_model"] == "qwen2.5:7b"
+
+
+# ---------------- 思考模式（think）在内置 Ollama 下也要记住 ----------------
+# 内置条目没有 profile 可存 think，落在 ui 段。不记的话，在输入框下方的
+# 思考 chip 上选完、刷新一下就回到 off —— 用户会以为开关是坏的。
+
+
+def test_think_persists_and_restores_for_builtin(tmp_path):
+    s = _session(tmp_path)
+    s.cfg.think = "medium"
+    s._sync_user_cfg()
+    assert uc.ConfigStore(s.config_store.path).load()["ui"]["think"] == "medium"
+
+    s2 = _session(tmp_path)
+    assert s2.cfg.think == "off", "构造时应是启动默认值"
+    s2._restore_profile()
+    assert s2.cfg.think == "medium", "重启后应回到上次选的思考模式"
+
+
+def test_explicit_think_flag_wins(tmp_path):
+    s = _session(tmp_path)
+    s.cfg.think = "high"
+    s._sync_user_cfg()
+
+    s2 = _session(tmp_path)
+    s2.cfg.think = "low"
+    s2.cfg._think_explicit = True      # 本次启动带了 --think low
+    s2._restore_profile()
+    assert s2.cfg.think == "low"
+
+
+def test_invalid_saved_think_is_ignored(tmp_path):
+    st = uc.ConfigStore(tmp_path / "config.json")
+    data = st.load()
+    data["ui"]["think"] = "bogus"      # 手改坏的值
+    st.save(data)
+
+    s = _session(tmp_path)
+    s._restore_profile()
+    assert s.cfg.think == "off", "认不出的值不能把配置改坏"
+
+
+def test_custom_profile_think_still_authoritative(tmp_path):
+    """自定义配置生效时以 profile.think 为准，别被 ui.think 顶掉。"""
+    st = uc.ConfigStore(tmp_path / "config.json")
+    data = st.load()
+    row = st.upsert_profile(data, {
+        "name": "中转站", "provider": "openai", "host": "https://x/v1",
+        "model": "deepseek-v4", "api_key": "k", "think": "on"})
+    data["active"] = row["id"]
+    data["ui"]["think"] = "max"
+    st.save(data)
+
+    s = _session(tmp_path)
+    s._restore_profile()
+    assert s.cfg.think == "on", s.cfg.think

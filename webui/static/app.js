@@ -31,6 +31,8 @@ const state = {
   searchQuery: "",    // 搜索态唯一真值：只有用户主动输入才更新，绝不信 input.value
   skillsOn: true,     // skill 工具是否启用（决定技能索引是否注入）
   skillsLoaded: false,// /api/skills 是否已返回过（避免首屏把「加载中」画成「没有技能」）
+  wsExpanded: new Set(),   // 已展开的目录（相对路径）：刷新后按原样恢复
+  wsChildren: new Map(),   // 目录 → 子项缓存：展开/收起不该重复请求
 };
 
 // ---------------- 工具函数 ----------------
@@ -61,6 +63,16 @@ const CTX_PRESETS = [
   [131072, "128K（131,072 tokens）"],
 ];
 const CTX_CUSTOM = "custom";
+// 每档值不值得选，一句话说清代价：num_ctx 越大，KV cache 越吃显存
+const CTX_DESC = {
+  0: "不传 num_ctx，交给服务端默认（Ollama 一般是 4096，长文易截断）",
+  4096: "最省显存，只够短对话",
+  8192: "日常问答的常见档位",
+  16384: "读一两份中等文档",
+  32768: "长文档 / 多文件一起读",
+  65536: "大文件与长对话，显存压力明显",
+  131072: "尽量塞满，8G 以下显存基本别选",
+};
 const CTX_CUSTOM_HINT =
   "自定义 num_ctx 要填正整数 token 数（例如 12288）；不想填就选 4K / 8K 这类预设档位。";
 
@@ -503,6 +515,14 @@ async function openPreview(path, name) {
   $("pv-body").innerHTML = '<div class="pv-note">加载中…</div>';
   $("pv-copy").hidden = true;
   $("pv-copy").onclick = null;
+  // 预览里的「加入上下文」：看完内容直接把这一个文件挂到本轮对话上，
+  // 关掉弹窗后 chip 就在输入框上方，无需再回侧栏找。
+  $("pv-add").onclick = () => {
+    const before = state.files.length;
+    addFileAttachment(display, path);
+    toast(state.files.length > before
+      ? `已加入上下文：${display}` : "这个文件已经在上下文里了");
+  };
   $("pv-download").onclick = () => {
     const a = document.createElement("a");
     a.href = "/api/file?raw=1&path=" + encodeURIComponent(path);
@@ -590,18 +610,106 @@ function clearOutline() {
   state.outline = [];
 }
 
-async function loadWorkspaceFiles() {
+// ---------------- 工作空间文件（目录树） ----------------
+
+// 每层缩进 14px：侧栏本来就窄，再多就没地方显示文件名了
+const WS_INDENT = 14;
+const wsPad = (depth) => 8 + depth * WS_INDENT;
+
+function wsEntryHtml(e, depth) {
+  const pad = wsPad(depth);
+  if (e.dir) {
+    // 只有「拉过子项且仍在展开集合里」才画成展开态。刷新会把缓存清掉，
+    // 这里若照着 wsExpanded 画成展开却留一个空容器，看起来就像空目录。
+    const open = state.wsChildren.has(e.path) && state.wsExpanded.has(e.path);
+    return `<button class="ws-row ws-dir${open ? " open" : ""}"` +
+      ` data-dir="${esc(e.path)}" data-depth="${depth}"` +
+      ` style="padding-left:${pad}px" title="${esc(e.path)}">` +
+      `<span class="caret">${open ? "▾" : "▸"}</span>` +
+      `<span class="wico">${open ? "📂" : "📁"}</span>` +
+      `<span class="nm">${esc(e.name)}</span></button>` +
+      `<div class="ws-kids" data-kids="${esc(e.path)}"${open ? "" : " hidden"}></div>`;
+  }
+  // 文件行外面套一层：点行=预览，右侧「+」=加入上下文（两个动作不能挤在一个
+  // button 里——button 套 button 是非法 HTML，浏览器会把它拆开）
+  return `<div class="ws-row-wrap">` +
+    `<button class="ws-item" data-path="${esc(e.path)}"` +
+    ` style="padding-left:${pad}px" title="${esc(e.path)}">` +
+    `<span class="fi">${fileIcon(e.name)}</span>` +
+    `<span class="nm">${esc(e.name)}</span></button>` +
+    `<button class="ws-add" data-add="${esc(e.path)}"` +
+    ` title="加入对话上下文" aria-label="${esc(e.name)} 加入上下文">+</button>` +
+    `</div>`;
+}
+
+function paintDir(container, data, depth) {
+  const entries = data.entries || [];
+  if (!entries.length) {
+    const msg = data.error ? esc(data.error) : (depth ? "空目录" : "工作空间没有文件");
+    container.innerHTML = depth
+      ? `<p class="ws-kid-empty" style="padding-left:${wsPad(depth)}px">${msg}</p>`
+      : `<p class="sb-empty">${msg}</p>`;
+    return;
+  }
+  container.innerHTML = entries.map((e) => wsEntryHtml(e, depth)).join("") +
+    (data.truncated
+      ? `<p class="ws-kid-empty" style="padding-left:${wsPad(depth)}px">还有更多未显示</p>`
+      : "");
+}
+
+// 按 dataset 精确匹配，而不是拼 CSS 属性选择器：路径里带引号/反斜杠时
+// 拼进选择器会直接抛 SyntaxError，整个侧栏白屏。
+const wsFind = (sel, key, val) =>
+  [...wsFilesEl.querySelectorAll(sel)].find((el) => el.dataset[key] === val);
+
+async function toggleDir(path, wantOpen) {
+  const row = wsFind(".ws-dir", "dir", path);
+  const kids = wsFind("[data-kids]", "kids", path);
+  if (!row || !kids) return;
+  const open = wantOpen === undefined ? !state.wsExpanded.has(path) : wantOpen;
+  if (!open) {
+    state.wsExpanded.delete(path);
+    row.classList.remove("open");
+    row.querySelector(".caret").textContent = "▸";
+    row.querySelector(".wico").textContent = "📁";
+    kids.hidden = true;
+    return;
+  }
+  state.wsExpanded.add(path);
+  row.classList.add("open");
+  row.querySelector(".caret").textContent = "▾";
+  row.querySelector(".wico").textContent = "📂";
+  kids.hidden = false;
+  if (state.wsChildren.has(path)) return;      // 拉过就复用，收起再展开不再请求
+  kids.innerHTML = '<p class="ws-kid-empty">加载中…</p>';
+  const depth = Number(row.dataset.depth || 0) + 1;
   try {
-    const r = await api("/api/files?q=");
-    const files = r.files || [];
-    if (!files.length) {
-      wsFilesEl.innerHTML = '<p class="sb-empty">工作空间没有文件</p>';
-      return;
-    }
-    wsFilesEl.innerHTML = files.slice(0, 40).map((f) =>
-      `<button class="ws-item" data-path="${esc(f.path)}" title="${esc(f.path)}">` +
-      `<span class="fi">${fileIcon(f.name)}</span>` +
-      `<span class="nm">${esc(f.name)}</span></button>`).join("");
+    const data = await api("/api/files/tree?path=" + encodeURIComponent(path));
+    state.wsChildren.set(path, data);
+    paintDir(kids, data, depth);
+  } catch {
+    kids.innerHTML = '<p class="ws-kid-empty">读取失败</p>';
+  }
+}
+
+// 刷新后按「上次展开的目录」逐层重拉。父目录必须先于子目录：
+// 外层重绘会把旧的 kids 容器一起换掉，子目录的 DOM 那时还不存在。
+async function restoreExpanded(paths) {
+  const ordered = [...paths].sort((a, b) => a.split("/").length - b.split("/").length);
+  for (const p of ordered) {
+    if (state.wsExpanded.has(p)) await toggleDir(p, true);
+  }
+}
+
+// reset=true：工作空间换了，旧的展开路径全部作废（否则一直攒着上一个目录的键）
+async function loadWorkspaceFiles(reset) {
+  if (reset) state.wsExpanded.clear();
+  const keep = new Set(state.wsExpanded);
+  state.wsChildren.clear();
+  try {
+    const root = await api("/api/files/tree?path=");
+    paintDir(wsFilesEl, root, 0);
+    await restoreExpanded(keep);
   } catch {
     wsFilesEl.innerHTML = '<p class="sb-empty">读取失败</p>';
   }
@@ -2048,21 +2156,24 @@ async function applyConfig() {
     patch.repeat_last_n = $("set-repeat-last-n").value.trim() === ""
       ? null : Number($("set-repeat-last-n").value);
   }
+  const wsBefore = (state.config && state.config.workspace) || "";
   try {
     await api("/api/config", patch);
     toast("偏好已应用");
     await loadConfig();
     await loadSkills();          // skills_on 可能随工具模式变了（skill 工具被关）
-    loadWorkspaceFiles();
+    const wsNow = (state.config && state.config.workspace) || "";
+    loadWorkspaceFiles(wsNow !== wsBefore);
   } catch (e) {
     toast("设置失败: " + e.message, true);
   }
 }
 
 // ============ 输入框下方快捷入口 ============
-// 切换模型 / 改执行权限 / 改工作空间都是一步到位，不进设置抽屉。
+// 模型 / 执行权限 / 工具 / 思考 / 上下文都是一步到位，不进设置抽屉。
+// 前三项是「换什么」，后两项是 Ollama 上最常拧的两个旋钮。
 // 只有「配置自定义模型」要填地址、Key、模型名，才走完整表单。
-let quickKind = "";              // "" | "model" | "perm" | "ws"
+let quickKind = "";              // "" | "model" | "perm" | "tools" | "think" | "ctx"
 let quickModelsFetched = false;  // 本次页面会话是否已真探测过 /api/tags
 
 const THINK_LABEL = {
@@ -2070,14 +2181,40 @@ const THINK_LABEL = {
   high: "high", max: "max", auto: "auto — 不传该字段",
 };
 
+// chip 上只有 4~6 个字的空间，标签另配一套短的
+const THINK_SHORT = {
+  off: "不思考", on: "思考", low: "思考·低", medium: "思考·中",
+  high: "思考·高", max: "思考·最高", auto: "思考·自动",
+};
+const THINK_DESC = {
+  off: "直接回答，省时间也省上下文", on: "按模型默认强度思考",
+  low: "轻度推理", medium: "中等推理", high: "较强推理", max: "尽量充分",
+  auto: "不下发该字段，交给模型/服务端决定",
+};
+
 function syncQuickChips(c) {
   $("quick-model-name").textContent = c.model || "未选模型";
   $("quick-perm-label").textContent = c.confirm ? "默认权限" : "完全访问";
   // 工具 chip 直接显示当前策略：改了模式不用点开就能看见生效了没有
   $("quick-tools-label").textContent = c.tool_mode_label || "全部";
-  const ws = c.workspace || ".";
-  $("quick-ws-label").textContent = ws.length > 26 ? "…" + ws.slice(-25) : ws;
-  $("quick-ws-label").title = ws;
+  // 思考模式只对 Ollama 原生协议有意义，别的协议照实说「不适用」而不是显示 off
+  const thinkOk = (c.caps || {}).think;
+  const think = c.think || "off";
+  $("quick-think-label").textContent = thinkOk
+    ? (THINK_SHORT[think] || think) : "思考不适用";
+  $("quick-think").classList.toggle("off", !thinkOk);
+  $("quick-think").title = thinkOk
+    ? "思考模式（当前：" + (THINK_SHORT[think] || think) + "）"
+    : "思考模式属于 Ollama 原生协议，当前模型接的不是 Ollama";
+  // 上下文窗口同理：不支持时明说「不适用」，不拿「默认」冒充一个会生效的值
+  const ctxOk = (c.caps || {}).num_ctx;
+  const nctx = Number(c.num_ctx) || 0;
+  $("quick-ctx-label").textContent = ctxOk
+    ? (nctx > 0 ? fmtCtxShort(nctx) : "默认上下文") : "上下文不适用";
+  $("quick-ctx").classList.toggle("off", !ctxOk);
+  $("quick-ctx").title = ctxOk
+    ? "上下文窗口 num_ctx（当前：" + (nctx > 0 ? fmtCtx(nctx) : "服务端默认") + "）"
+    : "num_ctx 属于 Ollama 原生协议，当前模型接的不是 Ollama";
 }
 
 function closeQuick() {
@@ -2111,7 +2248,8 @@ function renderQuick() {
   if (quickKind === "model") pop.innerHTML = qpModelHtml(c);
   else if (quickKind === "perm") pop.innerHTML = qpPermHtml(c);
   else if (quickKind === "tools") pop.innerHTML = qpToolsHtml(c);
-  else pop.innerHTML = qpWsHtml(c);
+  else if (quickKind === "think") pop.innerHTML = qpThinkHtml(c);
+  else if (quickKind === "ctx") pop.innerHTML = qpCtxHtml(c);
 }
 
 function qpCtxOptions(cur) {
@@ -2192,13 +2330,57 @@ function qpPermHtml(c) {
     `<p class="qp-note">切换即时生效并会记住（重启后仍保持）。</p></div>`;
 }
 
-function qpWsHtml(c) {
-  return `<div class="qp-head"><span>工作空间目录</span>` +
-    `<button class="qp-close" data-qp="close" title="关闭">✕</button></div>` +
-    `<div class="qp-body">` +
-    `<p class="qp-note" style="margin-top:0">相对路径都以这里为根。改动会新开一条对话，旧对话仍留在历史列表里。</p>` +
-    `<label class="qp-field">目录<input type="text" id="qp-ws-input" value="${esc(c.workspace || "")}" placeholder="例如 D:/docs"></label>` +
-    `<button class="qp-btn" data-qp="ws-apply">应用</button></div>`;
+function qpThinkHtml(c) {
+  const caps = c.caps || {};
+  const head = `<div class="qp-head"><span>思考模式</span>` +
+    `<button class="qp-close" data-qp="close" title="关闭">✕</button></div>`;
+  if (!caps.think) {
+    return head + `<div class="qp-body"><p class="qp-note" style="margin-top:0">` +
+      "当前接的是 OpenAI 兼容协议：think 属于 Ollama 原生字段，不会下发。" +
+      "要调它请把模型切回 Ollama。</p></div>";
+  }
+  const cur = c.think || "off";
+  const keys = c.think_values || Object.keys(THINK_LABEL);
+  const rows = keys.map((k) => {
+    const on = k === cur;
+    return `<button class="qp-row${on ? " on" : ""}" data-qp="think-pick" data-value="${esc(k)}">` +
+      `<span class="qp-name">${esc(THINK_SHORT[k] || k)}</span>` +
+      `<span class="qp-sub">${esc(THINK_DESC[k] || "")}</span>` +
+      (on ? '<span class="qp-check">✓</span>' : "") + `</button>`;
+  }).join("");
+  return head + `<div class="qp-body">` +
+    `<p class="qp-note" style="margin-top:0">思考过程会让模型先推理再回答，慢一些但复杂任务更稳。改动即时生效。</p>` +
+    `<div class="qp-list">${rows}</div></div>`;
+}
+
+function qpCtxHtml(c) {
+  const caps = c.caps || {};
+  const head = `<div class="qp-head"><span>上下文窗口</span>` +
+    `<button class="qp-close" data-qp="close" title="关闭">✕</button></div>`;
+  if (!caps.num_ctx) {
+    return head + `<div class="qp-body"><p class="qp-note" style="margin-top:0">` +
+      "当前接的是 OpenAI 兼容协议：num_ctx 属于 Ollama 原生字段，不会下发。" +
+      "要调它请把模型切回 Ollama。</p></div>";
+  }
+  const cur = Number(c.num_ctx) || 0;
+  // 配置文件里的非预设值也单独列一行，否则「打开看一眼」就把它显示成某个档位了
+  const vals = CTX_PRESETS.map(([v]) => v);
+  const extra = cur > 0 && !vals.includes(cur) ? [cur] : [];
+  const rows = extra.concat(vals).map((v) => {
+    const on = v === cur;
+    return `<button class="qp-row${on ? " on" : ""}" data-qp="ctx-pick" data-value="${v}">` +
+      `<span class="qp-name">${esc(v > 0 ? fmtCtxShort(v) : "默认")}</span>` +
+      `<span class="qp-sub">${esc(CTX_DESC[v] || fmtCtx(v) + " tokens")}</span>` +
+      (on ? '<span class="qp-check">✓</span>' : "") + `</button>`;
+  }).join("");
+  return head + `<div class="qp-body">` +
+    `<p class="qp-note" style="margin-top:0">上下文越大能一起读的东西越多，占的显存也越多；` +
+    `换档会触发模型重载，下一次调用会慢几秒。</p>` +
+    `<div class="qp-list">${rows}</div>` +
+    `<div class="qp-custom">` +
+    `<input type="number" min="512" step="512" placeholder="自定义 token 数，如 12288" data-qp="ctx-custom-input">` +
+    `<button class="qp-btn" data-qp="ctx-apply">应用</button>` +
+    `</div></div>`;
 }
 
 // ---------------- 工具 / 技能 ----------------
@@ -2551,6 +2733,24 @@ document.addEventListener("click", (e) => {
     return;
   }
 
+  // 树里的「+」：把该文件加进本轮对话上下文（和 @ 选文件走同一个 addFileAttachment，
+  // 去重、公告栏 chip、发送时注入附件指引都不用另写一份）
+  const wsAdd = t.closest(".ws-add");
+  if (wsAdd) {
+    const p = wsAdd.dataset.add;
+    const before = state.files.length;
+    addFileAttachment(p.split("/").pop(), p);
+    toast(state.files.length > before
+      ? `已加入上下文：${p}` : "这个文件已经在上下文里了");
+    return;
+  }
+
+  const wsDir = t.closest(".ws-dir");
+  if (wsDir) {
+    toggleDir(wsDir.dataset.dir);
+    return;
+  }
+
   const wsItem = t.closest(".ws-item");
   if (wsItem) {
     openPreview(wsItem.dataset.path, wsItem.querySelector(".nm").textContent);
@@ -2737,7 +2937,8 @@ $("mf-host").oninput = updateMfNote;
 $("quick-model").onclick = () => openQuick("model");
 $("quick-perm").onclick = () => openQuick("perm");
 $("quick-tools").onclick = () => openQuick("tools");
-$("quick-ws").onclick = () => openQuick("ws");
+$("quick-think").onclick = () => openQuick("think");
+$("quick-ctx").onclick = () => openQuick("ctx");
 $("quick-settings").onclick = () => $("btn-settings").click();
 
 $("quick-pop").addEventListener("click", async (e) => {
@@ -2766,11 +2967,23 @@ $("quick-pop").addEventListener("click", async (e) => {
     renderQuick();
     return;
   }
-  if (act === "ws-apply") {
-    const v = ($("qp-ws-input")?.value || "").trim();
-    if (!v) return toast("填一个存在的目录路径", true);
-    await quickPatch({ workspace: v }, "工作空间已更新");
-    loadWorkspaceFiles();
+  if (act === "think-pick") {
+    // 不关浮层：勾选要跟着变，用户能立刻看到生效的是哪一档
+    return quickPatch({ think: t.dataset.value }, "思考模式已更新");
+  }
+  if (act === "ctx-pick") {
+    return quickPatch({ num_ctx: Number(t.dataset.value) },
+      "上下文窗口已更新（可能触发模型重载）");
+  }
+  if (act === "ctx-apply") {
+    const inp = document.querySelector('#quick-pop [data-qp="ctx-custom-input"]');
+    const n = Number(inp && inp.value);
+    // 整数字节数校验放前端：后端也能拦，但等到报错再回来改体验太差
+    if (!Number.isInteger(n) || n < 512) {
+      return toast("请填 512 以上的整数 token 数", true);
+    }
+    if (n > 1048576) return toast("num_ctx 最大 1,048,576 tokens", true);
+    return quickPatch({ num_ctx: n }, "上下文窗口已更新（可能触发模型重载）");
   }
   if (act === "tool-mode") {
     const m = t.dataset.mode;
@@ -2808,6 +3021,15 @@ $("quick-pop").addEventListener("change", (e) => {
   }
 });
 
+// 自定义 token 数敲回车就应用，不用挪手去点按钮
+$("quick-pop").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  if (e.target.dataset.qp !== "ctx-custom-input") return;
+  e.preventDefault();
+  const btn = document.querySelector('#quick-pop [data-qp="ctx-apply"]');
+  if (btn) btn.click();
+});
+
 // 点浮层外 / Esc 关闭；chip 自身不算「外部」，否则刚打开就被关掉
 document.addEventListener("click", (e) => {
   if (!quickKind) return;
@@ -2824,7 +3046,9 @@ initCtxControl($("mf-ctx"), $("mf-ctx-custom"));
 document.querySelectorAll(".set-tab").forEach((b) => {
   b.onclick = () => switchTab(b.dataset.tab);
 });
-$("btn-refresh-files").onclick = loadWorkspaceFiles;
+// 不要直接绑 loadWorkspaceFiles：onclick 会把 Event 当第一个实参传进去，
+// 而 reset 只认「工作空间变了」——刷新时不该丢掉展开状态
+$("btn-refresh-files").onclick = () => loadWorkspaceFiles();
 $("btn-refresh-sessions").onclick = () => loadSessions();
 
 // 搜索历史对话：输入即搜（220ms 防抖），搜索态下刷新/删除都保持搜索。
