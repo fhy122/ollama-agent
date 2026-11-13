@@ -487,10 +487,13 @@ def make_handler(app: "WebUIApp"):
                 self.send_json(_full_config(app))
             elif path == "/api/confirm":
                 body = _json_body(self)
+                # text 缺省（None）= 老式布尔确认；给了就是 ask_user 的回答内容
+                text = body.get("text")
                 ok = app.session.answer_confirm(
                     str(body.get("id") or ""),
                     bool(body.get("approved")),
                     bool(body.get("allow_rest")),
+                    None if text is None else str(text),
                 )
                 self.send_json({"ok": ok})
             elif path == "/api/reset":

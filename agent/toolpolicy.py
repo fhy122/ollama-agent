@@ -47,6 +47,8 @@ TOOL_GROUPS = (
     ("write", "写入 / 修改", ("write_file", "edit_file", "delete_file")),
     ("web", "联网", ("web_search", "browse_url", "web_chat")),
     ("exec", "执行 / 自检", ("run_command", "verify", "todo_write")),
+    # 交互类：ask_user 是「问人拿主意」，不是「动手做事」，单独一组便于一眼关掉
+    ("ask", "交互", ("ask_user",)),
     ("skill", "技能", ("skill",)),
 )
 GROUP_OTHER = ("other", "其它")

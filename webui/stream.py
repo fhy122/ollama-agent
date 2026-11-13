@@ -95,9 +95,19 @@ class StreamEmitter:
             obj["images"] = images
         self._send(obj)
 
-    def confirm(self, cid: str, question: str) -> None:
-        """请求人工确认（工具执行前）。前端弹窗 → POST /api/confirm 应答。"""
-        self._send({"type": "confirm", "id": cid, "question": question})
+    def confirm(self, cid: str, question: str, options=None,
+                free_text=None) -> None:
+        """请求人工确认（工具执行前）或回答一个提问。
+
+        free_text is None → 执行确认（布尔放行），与改动前一致；
+        给了 free_text → 这是 ask_user 的提问，前端渲染选项按钮 + 输入框。
+        """
+        obj = {"type": "confirm", "id": cid, "question": question}
+        if free_text is not None:
+            obj["kind"] = "choice"
+            obj["options"] = list(options or [])
+            obj["free_text"] = bool(free_text)
+        self._send(obj)
 
     def stats(self, st: dict, step: int = 0) -> None:
         if not st:

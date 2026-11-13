@@ -276,10 +276,30 @@ def make_context(cfg: AgentConfig, workspace: Path, client=None) -> ToolContext:
         ans = input(color(f"? 允许执行 {what} ? [y/N] ", "yellow", cfg.use_color)).strip().lower()
         return ans in ("y", "yes")
 
+    def ask_choice(question: str, options: list, allow_free_text: bool) -> str:
+        """ask_user 的终端版：列编号让人挑，也可以直接写一句。
+
+        输入到 EOF（管道/重定向）当「没答复」返回空串，别让工具线程卡死。
+        """
+        print(color(f"? {question}", "yellow", cfg.use_color), flush=True)
+        for i, opt in enumerate(options, 1):
+            print(f"  {i}) {opt}", flush=True)
+        hint = "输入序号" + ("，或直接写你的答案" if allow_free_text else "")
+        try:
+            ans = input(f"  [{hint}] ").strip()
+        except EOFError:
+            return ""
+        if not ans:
+            return ""
+        if ans.isdigit() and 1 <= int(ans) <= len(options):
+            return str(options[int(ans) - 1])
+        return ans if allow_free_text else ""
+
     def notice(text: str) -> None:
         print(color(text, "yellow", cfg.use_color), flush=True)
 
     return ToolContext(confirm=cfg.confirm, use_color=cfg.use_color, ask=ask,
+                       ask_choice=ask_choice,
                        workspace=workspace, cfg=cfg, client=client,
                        notice=notice)
 

@@ -10,8 +10,8 @@ import time
 
 from agent.backends import ChatClient
 from agent import longdoc
-from agent.config import (SYSTEM_PROMPT_CORE, SYSTEM_PROMPT_FILE_RULE,
-                         AgentConfig)
+from agent.config import (SYSTEM_PROMPT_ASK_RULE, SYSTEM_PROMPT_CORE,
+                         SYSTEM_PROMPT_FILE_RULE, AgentConfig)
 from agent import context_view
 from agent import compaction
 from agent.events import ConsoleEmitter
@@ -197,6 +197,10 @@ def new_history(workspace: str | None = None, cfg=None) -> list:
     # 「生成文件必须用 write_file」这条只在真有 write_file 时才成立
     if toolpolicy.is_allowed(cfg, "write_file"):
         prompt += SYSTEM_PROMPT_FILE_RULE
+    # 同理：「该问就问」只在 ask_user 可用时才成立。没有这个工具还教它去问，
+    # 它只会说一句「请问您想选哪种」然后结束回合，用户答完还得重讲背景。
+    if toolpolicy.is_allowed(cfg, "ask_user"):
+        prompt += SYSTEM_PROMPT_ASK_RULE
     if workspace:
         prompt += f"\n当前工作空间目录: {workspace}"
     prompt += _policy_hint(cfg)

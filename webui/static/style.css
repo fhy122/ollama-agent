@@ -1033,6 +1033,32 @@ details.think .body { font-family: inherit; font-size: 13px; }
 .modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .modal-note { margin: 14px 0 0; font-size: 12px; color: var(--muted); }
 
+/* ---- ask_user 的提问：选项当按钮，文本当补充 ---- */
+/* 提问是自然语言，不是工具参数：换回正文字体，去掉代码块底色 */
+.modal-q.prose {
+  font-family: inherit; font-size: 14px; line-height: 1.65;
+  background: none; border: none; padding: 0;
+  margin: 0 0 14px; color: var(--text);
+}
+.confirm-options { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.confirm-opt {
+  text-align: left; padding: 10px 12px; line-height: 1.55;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--bg); color: var(--text); font: inherit; font-size: 13px;
+  cursor: pointer; transition: border-color var(--dur), color var(--dur);
+}
+.confirm-opt:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-soft);
+}
+.confirm-free { display: flex; gap: 8px; margin-bottom: 12px; }
+.confirm-free input {
+  flex: 1; min-width: 0; padding: 9px 11px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--bg); color: var(--text); font: inherit; font-size: 13px;
+}
+.confirm-free .primary { flex: 0 0 auto; }
+
 /* 二次确认（清空 / 删除对话）：文案是话不是代码，别套 .modal-q 的等宽框 */
 .yn-box { width: min(430px, 100%); }
 .yn-body {

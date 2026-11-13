@@ -1581,27 +1581,86 @@ function applyEvent(turn, ev) {
   scrollBottom();
 }
 
-// ---------------- 执行确认 ----------------
+// ---------------- 执行确认 / 回答提问 ----------------
+// 同一个弹窗承载两件事，但视觉上必须能分清：
+//   确认执行（kind 缺省）：布尔放行，三个按钮；
+//   回答提问（kind=choice）：选项按钮 + 输入框，没有「全部允许」——
+//   那种「一次授权管到底」的语义不该出现在「你选哪条路」上。
 function askConfirm(ev) {
   const modal = $("confirm-modal");
+  const isChoice = ev.kind === "choice";
+  const opts = isChoice && Array.isArray(ev.options) ? ev.options : [];
+  const freeText = isChoice && ev.free_text !== false;
+
+  $("confirm-title").textContent = isChoice ? "需要你定一下" : "确认执行";
   $("confirm-q").textContent = ev.question || "(未提供参数信息)";
-  modal.classList.remove("hidden");
+  // 确认框里是工具参数（等宽、保留换行），提问是自然语言：换回正文字体
+  $("confirm-q").classList.toggle("prose", isChoice);
+  $("confirm-note").textContent = isChoice
+    ? "超过 5 分钟不回答会按「没答复」继续（不是替你选）。"
+    : "超过 5 分钟未确认将自动拒绝。删除/写入不可恢复，看清参数再放行。";
+
   const done = () => {
     modal.classList.add("hidden");
+    $("confirm-options").innerHTML = "";
     $("btn-confirm-yes").onclick = null;
     $("btn-confirm-all").onclick = null;
     $("btn-confirm-no").onclick = null;
+    $("btn-confirm-send").onclick = null;
+    $("btn-confirm-skip").onclick = null;
+    $("confirm-text").onkeydown = null;
   };
-  const reply = (approved, allowRest) => {
+  const reply = (approved, allowRest, text) => {
     done();
-    api("/api/confirm", { id: ev.id, approved, allow_rest: allowRest })
-      .then((r) => { if (!r.ok) toast("确认已过期（可能超时），工具未执行", true); })
-      .catch((e) => toast("确认失败: " + e.message, true));
+    const payload = { id: ev.id, approved, allow_rest: allowRest };
+    // text 只在「回答提问」时带：带了它，后端就按内容作答而不是按布尔
+    if (text !== undefined) payload.text = text;
+    api("/api/confirm", payload)
+      .then((r) => { if (!r.ok) toast("这次请求已过期（可能超时），已按没答复继续", true); })
+      .catch((e) => toast("提交失败: " + e.message, true));
   };
+
+  // 选项按钮：一条一个，点即答复
+  const box = $("confirm-options");
+  box.innerHTML = "";
+  box.classList.toggle("hidden", opts.length === 0);
+  opts.forEach((text, i) => {
+    const b = document.createElement("button");
+    b.className = "confirm-opt";
+    b.type = "button";
+    b.dataset.i = String(i);
+    b.textContent = text;
+    b.onclick = () => reply(true, false, text);
+    box.appendChild(b);
+  });
+
+  // 自由输入：回车提交，空串等于没答（后端会按「没答复」继续）
+  const free = $("confirm-free");
+  free.classList.toggle("hidden", !freeText);
+  $("confirm-text").value = "";
+  $("btn-confirm-send").onclick = () => reply(true, false, $("confirm-text").value.trim());
+  $("confirm-text").onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      $("btn-confirm-send").click();
+    }
+  };
+
+  // 布尔三按钮 vs 「跳过不答」，二选一显示
+  $("confirm-actions").classList.toggle("hidden", isChoice);
+  $("confirm-choice-actions").classList.toggle("hidden", !isChoice);
   $("btn-confirm-yes").onclick = () => reply(true, false);
   $("btn-confirm-all").onclick = () => reply(true, true);
   $("btn-confirm-no").onclick = () => reply(false, false);
-  toast("有工具等待确认，请查看弹窗");
+  $("btn-confirm-skip").onclick = () => reply(false, false, "");
+
+  modal.classList.remove("hidden");
+  if (isChoice) {
+    toast("模型在等你定方案，请查看弹窗");
+    if (freeText && !opts.length) $("confirm-text").focus();
+  } else {
+    toast("有工具等待确认，请查看弹窗");
+  }
 }
 
 // ---------------- 二次确认（清空 / 删除对话） ----------------

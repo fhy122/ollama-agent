@@ -35,6 +35,10 @@ class ToolContext:
     confirm: bool = False
     use_color: bool = True
     ask: Callable[[str], bool] | None = None
+    # 向用户提问并等待回答（规划阶段定方案）。返回答复文本；空串 = 没拿到
+    # （超时或本轮被打断）。与 ask 的分工：ask 问「这个操作要不要放行」，
+    # 只要一个是/否；ask_choice 问「这几条路走哪条」，要的是内容。
+    ask_choice: Callable[[str, list[str], bool], str] | None = None
     workspace: Path = field(default_factory=Path.cwd)
     # 本次回合允许的工具名；None = 不限制。由 run_turn 按 toolpolicy 注入，
     # 用来拦住「模型幻觉出一个已被关掉的工具」——只靠不传 schema 挡不住

@@ -144,6 +144,7 @@ python ollama_agent.py --ui          # 同上（--port 同样可用）
 | 偏好 | 「设置 → 偏好」：单回合最大工具步数、**执行前确认**、工作空间、**工具与技能启停**、think、num_ctx、temperature、repeat_penalty、repeat_last_n（后五项仅 Ollama 生效，OpenAI 协议下会置灰并说明原因） |
 | 工具/技能 | 输入框下方「工具」chip 一步切模式：全部 / 只对话 / 纯聊天，或逐项勾选进自定义。关掉的工具**不再下发 schema**，是省上下文的主要手段 |
 | 执行确认 | 写/改/删/联网/命令执行工具（`confirm=True`）执行前弹确认框：**允许 / 本回合全部允许 / 拒绝**；默认开启，5 分钟未确认自动拒绝（fail-safe） |
+| 规划提问 | agent 拿不定主意时调 **`ask_user`** 把方案摆成按钮（最多 6 条，每条一句取舍，可附自由输入），点一下就是答复，它拿着答复继续干。弹窗与「执行确认」明确分开：标题「需要你定一下」、没有「全部允许」——**授权一个危险操作 ≠ 替你做决定**。5 分钟不答按「没答复」继续（既不当同意也不当否决，模型会按最保守的选项走并标注待确认）；本轮被打断则立即收尾。CLI 里列编号让人挑。没有交互通道的场合（脚本 / 子代理）工具会说「不支持，别重试」，不会静默编一个答案 |
 
 **预览接口：** `GET /api/file?path=…`（JSON 预览数据）、`?raw=1`（下载）。只允许工作空间内的路径，
 跨目录访问返回 403；文本上限 400KB，表格取前 200 行 × 30 列。
@@ -935,6 +936,8 @@ python tests/test_repeat_penalty.py   # 重复惩罚参数：默认不下发/精
 python tests/test_builtin_model.py    # 内置模型选择持久化（重启恢复/显式 --model 优先/profile 权威）
 python tests/test_quick_chips.py      # 输入框快捷入口 UI 冒烟（Playwright，含重启后显示所选模型 + 工具策略）
 python tests/test_tool_policy.py      # 工具/技能启停：四模式下发/只对话四件/dispatch 拦截/技能索引联动/持久化
+python tests/test_ask_user.py         # 规划提问：参数透传/无通道不编答案/超时≠否决/打断/answer_rest 不替用户选/session 接线
+python tests/test_ask_user_ui.py      # 提问弹窗 UI 冒烟（Playwright）：选项按钮/自由输入/跳过/布尔确认不带 text
 python tests/test_file_tree.py        # 工作空间目录树接口：只列一层/目录优先/忽略目录/路径越界/截断/旧接口不变
 python tests/test_file_tree_ui.py     # 目录树 + 加入上下文 UI 冒烟（Playwright，含同名文件各归各目录）
 python tests/test_spill.py            # 工具输出落盘（超限截断/豁免清单/取回预览）

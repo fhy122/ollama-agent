@@ -148,8 +148,15 @@ class RecordingEmitter:
                     "dt": round(dt, 2), "images": images or []})
         self._inner.tool_result(name, text, dt, images)
 
-    def confirm(self, cid: str, question: str) -> None:
-        self._inner.confirm(cid, question)
+    def confirm(self, cid: str, question: str, options=None, free_text=None) -> None:
+        # 布尔确认走原来的两参调用，旧发射器（测试替身 / 第三方实现）零影响；
+        # 只有提问这条路才试新签名，不认就退化成一条普通确认，别把回合打炸。
+        if free_text is None:
+            return self._inner.confirm(cid, question)
+        try:
+            self._inner.confirm(cid, question, options, free_text)
+        except TypeError:
+            self._inner.confirm(cid, question)
 
     def stats(self, st: dict, step: int = 0) -> None:
         if st:
@@ -212,7 +219,7 @@ class ConfirmGate:
                 return True
             self._seq += 1
             cid = f"c{self._seq}"
-            entry = {"ok": False, "ev": threading.Event()}
+            entry = {"ok": False, "ev": threading.Event(), "answer": ""}
             self._pending[cid] = entry
         try:
             notify(cid, what)
@@ -228,14 +235,57 @@ class ConfirmGate:
                 return False
             return entry["ok"]
 
-    def answer(self, cid: str, approved: bool, allow_rest: bool = False) -> bool:
-        """应答一次确认。返回 False = id 不存在（已超时/已应答/过期）。"""
+    def ask_choice(self, question: str, options: list[str],
+                   allow_free_text: bool, notify) -> str:
+        """推送一个「选一条路」的请求，等用户答复。返回答复文本。
+
+        空串 = 没拿到答复（超时，或本轮被打断 —— 调用方用 cancel 区分）。
+
+        与 ask 的两处刻意不同：
+        1. **不看 allow_rest**：「本回合全部允许」授权的是危险操作，不是授权
+           替用户做决定。在这儿返回默认值等于把用户的选择权吞掉。
+        2. **超时不当否决**：沉默不是答案。返回空串让工具侧说明「没答」，
+           否则模型会把超时当否决，去改一个用户根本没看过的方案。
+        """
+        self.last_timeout = False
+        with self._lock:
+            self._seq += 1
+            cid = f"c{self._seq}"
+            entry = {"ok": False, "ev": threading.Event(), "answer": "", "choice": True}
+            self._pending[cid] = entry
+        try:
+            notify(cid, question, list(options or []), bool(allow_free_text))
+        except Exception:
+            with self._lock:
+                self._pending.pop(cid, None)
+            return ""
+        finished = entry["ev"].wait(self.timeout)
+        with self._lock:
+            self._pending.pop(cid, None)
+            if not finished:
+                self.last_timeout = True
+                return ""
+            return str(entry.get("answer") or "")
+
+    def answer(self, cid: str, approved: bool, allow_rest: bool = False,
+               text: str | None = None) -> bool:
+        """应答一次确认/提问。返回 False = id 不存在（已超时/已应答/过期）。
+
+        text 不为 None = 这是对提问的回答（内容优先于 approved）；
+        为 None = 老式的布尔放行/拒绝，行为与改动前完全一致。
+        """
         with self._lock:
             entry = self._pending.get(cid)
             if entry is None:
                 return False
-            entry["ok"] = bool(approved)
-            if approved and allow_rest:
+            if text is not None:
+                entry["answer"] = str(text)
+                entry["ok"] = True
+            else:
+                entry["ok"] = bool(approved)
+            # 「本回合全部允许」只对布尔确认有意义：一个回答不能被当成
+            # 「接下来所有问题都免问」的授权。
+            if approved and allow_rest and not entry.get("choice"):
                 self.allow_rest = True
             entry["ev"].set()
             return True
@@ -728,6 +778,8 @@ class AgentSession:
                     (self.user_cfg.get("ui") or {}).get("confirm", True))
             self.ctx.confirm = self.confirm
             self.ctx.ask = lambda what: self._ask(what, emitter)
+            self.ctx.ask_choice = (
+                lambda q, opts, free: self._ask_choice(q, opts, free, emitter))
             user_turn = {
                 "role": "user",
                 "text": display if display is not None else text,
@@ -752,6 +804,7 @@ class AgentSession:
             finally:
                 self._live = None
                 self.ctx.ask = None
+                self.ctx.ask_choice = None
                 if self.title in ("", UNTITLED):
                     self.title = make_title(user_turn["text"])
                 self._save()
@@ -824,9 +877,26 @@ class AgentSession:
             emitter.notice("[确认超时] 未在限定时间内确认，已自动拒绝执行")
         return ok
 
-    def answer_confirm(self, cid: str, approved: bool, allow_rest: bool = False) -> bool:
-        """应答确认请求（HTTP 线程调用，不取会话锁）。"""
-        return self.gate.answer(cid, approved, allow_rest)
+    def answer_confirm(self, cid: str, approved: bool, allow_rest: bool = False,
+                       text: str | None = None) -> bool:
+        """应答确认请求（HTTP 线程调用，不取会话锁）。
+
+        text 给了就是「对提问的回答」，否则仍是布尔放行/拒绝。
+        """
+        return self.gate.answer(cid, approved, allow_rest, text)
+
+    def _ask_choice(self, question: str, options: list[str],
+                    allow_free_text: bool, emitter) -> str:
+        """把提问推给前端并阻塞等答复；返回答复文本（空串 = 没拿到）。"""
+        ans = self.gate.ask_choice(
+            question, options, allow_free_text,
+            lambda cid, q, opts, ft: emitter.confirm(cid, q, opts, ft))
+        if not ans:
+            if self.gate.last_timeout:
+                emitter.notice("[提问超时] 未在限定时间内回答，已按「没答复」继续")
+            elif self.cancel_event.is_set():
+                emitter.notice("[⏹ 已打断，提问未答复]")
+        return ans
 
     def load_skill(self, name: str) -> dict:
         """加载技能并注入历史（等价 CLI /skill）。返回 {ok, chars|error}。"""

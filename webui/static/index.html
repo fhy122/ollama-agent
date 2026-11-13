@@ -351,14 +351,23 @@
 <!-- ================= 执行确认 ================= -->
 <div id="confirm-modal" class="modal hidden">
   <div class="modal-box">
-    <h3>确认执行</h3>
+    <h3 id="confirm-title">确认执行</h3>
     <p class="modal-q" id="confirm-q"></p>
-    <div class="modal-actions">
+    <!-- ask_user 的提问：选项渲染成按钮，点一下就是答复 -->
+    <div id="confirm-options" class="confirm-options hidden"></div>
+    <div id="confirm-free" class="confirm-free hidden">
+      <input id="confirm-text" type="text" placeholder="也可以直接写你的答案">
+      <button class="primary" id="btn-confirm-send">提交</button>
+    </div>
+    <div class="modal-actions" id="confirm-actions">
       <button class="primary" id="btn-confirm-yes">允许</button>
       <button class="ghost" id="btn-confirm-all">本回合全部允许</button>
       <button class="danger" id="btn-confirm-no">拒绝</button>
     </div>
-    <p class="modal-note">超过 5 分钟未确认将自动拒绝。删除/写入不可恢复，看清参数再放行。</p>
+    <div class="modal-actions hidden" id="confirm-choice-actions">
+      <button class="ghost" id="btn-confirm-skip">跳过不答</button>
+    </div>
+    <p class="modal-note" id="confirm-note">超过 5 分钟未确认将自动拒绝。删除/写入不可恢复，看清参数再放行。</p>
   </div>
 </div>
 
