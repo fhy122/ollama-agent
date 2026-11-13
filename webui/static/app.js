@@ -33,6 +33,8 @@ const state = {
   skillsLoaded: false,// /api/skills 是否已返回过（避免首屏把「加载中」画成「没有技能」）
   wsExpanded: new Set(),   // 已展开的目录（相对路径）：刷新后按原样恢复
   wsChildren: new Map(),   // 目录 → 子项缓存：展开/收起不该重复请求
+  turnSeq: 0,              // 本页发出的第几轮：桌面通知的去重签名
+  stopped: false,          // 用户主动点了停止：这一轮不该弹「已回复」
 };
 
 // ---------------- 工具函数 ----------------
@@ -362,6 +364,12 @@ function renderMarkdown(src) {
     s = s.replace(/^#{1,4}\s+(.+)$/gm, "<h4>$1</h4>");
     s = s.replace(/^(?:[-*]|\d+\.)\s+(.+)$/gm, "<li>$1</li>");
     s = s.replace(/(<li>[\s\S]*?<\/li>)(\n(?!<li>)|$)/g, "<ul>$1</ul>$2");
+    // 水平分隔线：整行只有 3 个以上的 - * _（可夹空格）。必须在表格抽取
+    // 之后——表格的 |---|---| 带竖线，不会被这条吃掉；也必须前后补空行，
+    // 否则紧跟在段落下面的 --- 会跟上一行粘成一块，被 <p><br> 吞掉。
+    s = s.replace(
+      /^[ \t]{0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/gm,
+      "\n\n<hr>\n\n");
     // 图片要在自动链接之前抽成占位，否则 src 里的 URL 会被自动链接拆坏标签
     const imgs = [];
     s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|data:image\/[^\s)]+)\)/g, (m, alt, src) => {
@@ -383,7 +391,8 @@ function renderMarkdown(src) {
       if (!t) return "";
       const bm = t.match(/^\u0000B(\d+)\u0000$/);
       if (bm) return `<div class="md-math-block">${maths[Number(bm[1])].html}</div>`;
-      return (t.startsWith("<h4>") || t.startsWith("<ul>") || t.startsWith("<div"))
+      return (t.startsWith("<h4>") || t.startsWith("<ul>") || t.startsWith("<div")
+        || t.startsWith("<hr"))
         ? t : `<p>${t.replace(/\n/g, "<br>")}</p>`;
     }).join("")
       .replace(/\u0000M(\d+)\u0000/g, (m, i) => maths[Number(i)].html)
@@ -1223,6 +1232,7 @@ function setBusy(busy) {
 }
 
 async function stopGeneration() {
+  state.stopped = true;                  // 通知那边据此跳过「已回复」
   // 顺序很关键：先让后端停（它会 close 连接、释放会话锁），再断本地流。
   // 反过来做的话，本地 finally 会抢在前面跑 setBusy(false)——按钮已经变回
   // 「发送」，后端却还锁着，此时点新建对话必被 409 挡回，界面上又没有停止按钮，
@@ -1408,6 +1418,8 @@ async function attachLive(first, fallbackTurns = []) {
 
 async function runTurnStream(text, imgs, files) {
   closePal();
+  state.turnSeq += 1;      // 桌面通知的去重签名：同一轮只弹一次
+  state.stopped = false;
   addUserMsg(text, imgs, files);
   setBusy(true);
   abortCtl = new AbortController();
@@ -1576,6 +1588,11 @@ function applyEvent(turn, ev) {
       toast(ev.text, true);
       break;
     case "done":
+      // 回合真正结束（不是刷新/断连）：只有这里适合弹「回复好了」。
+      // 流式过程中每个 text 事件都弹会把人烦死，而且那时还没写完。
+      // 先通知再复位 stopped——notifyTurnDone 内部要靠它区分「自己掐断的」。
+      notifyTurnDone(ev);
+      state.stopped = false;
       break;
   }
   scrollBottom();
@@ -1769,6 +1786,174 @@ async function pollPending() {
 
 // 并行会话运行态轮询：会话列表上的「生成中 ●」「已完成 ✦」徽标。
 // 状态签名没变就不重画，避免每 2.5s 重置列表的悬停/滚动状态。
+// ---------------- 桌面通知（Windows 系统 toast） ----------------
+// 只在这个窗口「没在看」的时候弹：最小化、切到别的标签页、或焦点在别的窗口。
+// 页面可见且有焦点时不弹——会话列表上的 ✦ 徽标已经说清楚了，再弹一次是噪音。
+//
+// 用的是浏览器 Notification API：Windows 上它落进系统通知中心，点一下能回到
+// 这条会话。代价是浏览器得开着（标签页关掉就收不到），这是网页方案的上限；
+// 要「关掉浏览器也收得到」得做 Python 侧原生通知，那是另一套工程（要打包、
+// 注册 AppUserModelID、常驻托盘），不在这一版里。
+const NKEY = "oa.notify";           // "1" = 开
+const NKEY_DND = "oa.notify.dnd";   // "1" = 免打扰
+const NKEY_LOCK = "oa.notify.lock"; // 跨标签页去重：{key, at}
+const notified = new Map();         // sid -> 已通知过的 key（本页内去重）
+
+function notifySupported() {
+  return typeof window.Notification === "function";
+}
+function notifyEnabled() {
+  try { return localStorage.getItem(NKEY) === "1"; } catch { return false; }
+}
+function notifyDnd() {
+  try { return localStorage.getItem(NKEY_DND) === "1"; } catch { return false; }
+}
+function notifyPerm() {
+  return notifySupported() ? Notification.permission : "unsupported";
+}
+// 「用户正在看这个页面」：可见 + 有焦点，两者缺一都算没在看。
+// 只判 hidden 不够——窗口没最小化但焦点在别的程序上时，hidden 仍是 false。
+function watchingPage() {
+  return !document.hidden && document.hasFocus();
+}
+
+// 跨标签页去重：同一个 key 4 秒内只发一次。
+// 开两个标签页时两边都会轮询到同一条会话，没有这道闸就会弹两条。
+function claimNotice(key) {
+  const now = Date.now();
+  let prev = null;
+  try { prev = JSON.parse(localStorage.getItem(NKEY_LOCK) || "null"); } catch { prev = null; }
+  if (prev && prev.key === key && now - Number(prev.at || 0) < 4000) return false;
+  try { localStorage.setItem(NKEY_LOCK, JSON.stringify({ key, at: now })); } catch { /* 忽略 */ }
+  return true;
+}
+
+async function requestNotifyPerm() {
+  if (!notifySupported()) return "unsupported";
+  if (Notification.permission === "granted") return "granted";
+  // 已经 denied 时再调 requestPermission 不会再弹窗（浏览器铁律），
+  // 只能让用户去地址栏的站点设置里改，所以这里直接返回状态。
+  if (Notification.permission === "denied") return "denied";
+  try {
+    return await Notification.requestPermission();
+  } catch {
+    return "denied";
+  }
+}
+
+// markdown → 一行纯文本。通知里显示不了一堆 * # `，代码块整段丢掉。
+function plainPreview(text, limit = 120) {
+  let s = String(text || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/[*_~]{1,3}/g, "")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/^\s{0,3}>\s?/gm, "")
+    .replace(/^\s{0,3}[-*+]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (s.length > limit) s = s.slice(0, limit - 1).replace(/\s+$/, "") + "…";
+  return s;
+}
+
+// 真正的出口：所有守卫都在这里，调用方只管「有事要通知」。
+// 返回 true = 确实弹了一条（设置面板与测试都依赖这个返回值）。
+function pushNotice(o) {
+  if (!notifyEnabled() || notifyPerm() !== "granted") return false;
+  if (notifyDnd()) return false;
+  if (watchingPage()) return false;
+  const key = String(o.key || "");
+  if (notified.get(o.sid) === key) return false;   // 同一回合只响一次
+  if (o.crossTab) {
+    if (!claimNotice(o.sid + "|" + key)) {
+      notified.set(o.sid, key);                    // 别的标签页已经弹过了
+      return false;
+    }
+  }
+  notified.set(o.sid, key);
+  let n;
+  try {
+    n = new Notification(o.title || "ollama agent", {
+      body: o.body || "",
+      tag: "oa-" + o.sid,          // 同一会话的新通知替换旧的，不在通知中心堆一列
+      icon: "/static/favicon.svg",
+    });
+  } catch {
+    return false;                  // 权限刚被撤销 / 系统关了通知：静默降级
+  }
+  n.onclick = () => {
+    try { window.focus(); } catch { /* 部分浏览器拒绝聚焦，忽略 */ }
+    if (o.sid && o.sid !== state.sid) openSessionById(o.sid);
+    try { n.close(); } catch { /* 已经自己关掉了 */ }
+  };
+  return true;
+}
+
+// 当前会话跑完：用户可能正在别的窗口等，这时才需要系统通知。
+// done 事件自带最终文本，不用去 DOM 里捞（历史回放的 DOM 也可能是空的）。
+function notifyTurnDone(ev) {
+  if (state.stopped) return false;              // 自己掐断的，不算「回复好了」
+  const text = plainPreview(ev && ev.text);
+  if (!text) return false;                      // 空消息 / 斜杠命令 / 报错路径 → 不打扰
+  const sid = (ev && ev.session && ev.session.id) || state.sid || "";
+  if (!sid) return false;
+  const meta = state.sessions.find((s) => s.id === sid) || {};
+  const title = (ev && ev.session && ev.session.title) || meta.title || "当前对话";
+  return pushNotice({
+    sid,
+    key: "done|" + (state.turnSeq || 0),
+    title: "助手已回复 · " + title,
+    body: text,
+  });
+}
+
+// 后台会话跑完：attention 从 false 翻成 true 的那一刻推一条。
+// 每 2.5s 轮询一次，而 attention 会一直保持 true 直到用户点开——
+// 所以必须比对「上一轮的值」，不能看见 true 就弹（否则一条会话会弹十几次）。
+function notifyAttention(st) {
+  const prev = state.statuses || {};
+  for (const sid of Object.keys(st)) {
+    const cur = st[sid] || {};
+    if (!cur.attention) continue;
+    if ((prev[sid] || {}).attention) continue;
+    pushNotice({
+      sid,
+      key: (cur.rev || 0),
+      crossTab: true,
+      title: "助手已回复 · " + (cur.title || "对话"),
+      body: cur.preview || "已完成，点开查看",
+    });
+  }
+}
+
+// 设置面板里的通知状态：权限没给时不能留一个「开」在那儿骗人。
+function renderNotifyPrefs() {
+  const sel = $("set-notify");
+  const dnd = $("set-notify-dnd");
+  const note = $("notify-note");
+  if (!sel || !dnd || !note) return;
+  const perm = notifyPerm();
+  sel.value = notifyEnabled() ? "on" : "off";
+  dnd.value = notifyDnd() ? "on" : "off";
+  if (perm === "unsupported") {
+    sel.disabled = true;
+    note.textContent = "这个浏览器不支持桌面通知（需要 https 或 localhost 访问）。";
+    return;
+  }
+  sel.disabled = false;
+  if (perm === "denied") {
+    note.textContent = "通知权限被拒绝过，浏览器不会再问。点地址栏左侧的站点图标 → 通知 → 允许，然后刷新页面。";
+  } else if (perm === "granted") {
+    note.textContent = notifyEnabled()
+      ? "已开启：窗口最小化、切到别的标签页或焦点在别的程序时，回复完成会弹 Windows 系统通知，点一下就回到这条对话。免打扰开着时只留页面内的 ✦ 徽标。"
+      : "权限已给，但开关是关的——打开上面的开关即可开始提醒。";
+  } else {
+    note.textContent = "还没授权。把上面的开关打开，浏览器会弹一次授权请求（只问一次）。";
+  }
+}
+
 let statusesSig = "";
 async function pollStatuses() {
   try {
@@ -1793,6 +1978,7 @@ async function pollStatuses() {
     const sig = JSON.stringify(st);
     if (sig === statusesSig && !listChanged) return;
     statusesSig = sig;
+    notifyAttention(st);      // 必须在覆盖 state.statuses 之前：它靠旧值判断「刚完成」
     state.statuses = st;
     // 搜索态下不能用全量列表覆盖结果（原来每 2.5s 会把搜索结果冲掉）；
     // 会话集合变了才重搜一次，保证结果不过期，也不打断列表交互。
@@ -2153,6 +2339,7 @@ async function loadConfig() {
     $("set-ws").value = c.workspace || "";
     renderToolPrefs(c);
     renderSkillPrefs();
+    renderNotifyPrefs();
     syncQuickChips(c);
     syncFeatureGate(c.features || []);
   } catch (e) {
@@ -2971,6 +3158,45 @@ $("btn-close-settings").onclick = () => {
   closeModelForm();      // 关抽屉时收起表单，下次打开不残留上次编辑的内容
 };
 $("btn-apply").onclick = applyConfig;
+// 桌面通知：开关与免打扰都是纯前端偏好（localStorage），即时生效，
+// 不跟「应用偏好」一起提交——那个按钮是写给后端配置的。
+$("set-notify").onchange = async (e) => {
+  if (e.target.value === "on") {
+    const perm = await requestNotifyPerm();
+    if (perm !== "granted") {
+      // 权限没给就别把开关留在「开」——那会让人以为在提醒，其实一条都发不出去
+      try { localStorage.removeItem(NKEY); } catch { /* 忽略 */ }
+      renderNotifyPrefs();
+      toast(perm === "unsupported"
+        ? "这个浏览器不支持桌面通知"
+        : "通知权限没给：点地址栏左侧的站点图标 → 通知 → 允许", true);
+      return;
+    }
+    try { localStorage.setItem(NKEY, "1"); } catch { /* 隐私模式写不进，功能降级 */ }
+  } else {
+    try { localStorage.removeItem(NKEY); } catch { /* 忽略 */ }
+  }
+  renderNotifyPrefs();
+};
+$("set-notify-dnd").onchange = (e) => {
+  try {
+    if (e.target.value === "on") localStorage.setItem(NKEY_DND, "1");
+    else localStorage.removeItem(NKEY_DND);
+  } catch { /* 忽略 */ }
+  renderNotifyPrefs();
+};
+$("btn-notify-perm").onclick = async () => {
+  const perm = await requestNotifyPerm();
+  if (perm === "granted") {
+    try { localStorage.setItem(NKEY, "1"); } catch { /* 忽略 */ }
+    toast("桌面通知已开启");
+  } else if (perm === "unsupported") {
+    toast("这个浏览器不支持桌面通知", true);
+  } else {
+    toast("通知被拒绝：点地址栏左侧的站点图标 → 通知 → 允许，然后刷新", true);
+  }
+  renderNotifyPrefs();
+};
 // 在偏好里勾/取消任何工具 → 模式自动切到「自定义」，
 // 否则用户勾完了、模式还停在「全部」，改了半天不生效
 $("set-tool-list").addEventListener("change", (e) => {
@@ -3293,6 +3519,7 @@ if (window.innerWidth <= 900 || savedSb === "0") setSidebar(false);
 loadConfig();
 loadSkills();
 loadWorkspaceFiles();
+renderNotifyPrefs();                // 抽屉没打开也要先渲染一次：权限文案不能是空的
 setInterval(pollPending, 2500);
 setInterval(pollStatuses, 2500);   // 并行会话：列表徽标（生成中/后台完成）
 autoGrow();

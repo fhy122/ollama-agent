@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import re
 import threading
 import time
 from pathlib import Path
@@ -28,7 +29,42 @@ FEATURES = (
     "models.profiles",   # 模型配置管理：多配置增删改 + 持久化
     "options.repeat",    # 重复惩罚（repeat_penalty / repeat_last_n）可在偏好里调
     "tools.policy",      # 工具/技能按需启停（只对话模式、自定义白名单）
+    "notify.preview",    # /api/statuses 带摘要（桌面通知的正文来源）
 )
+
+
+# 桌面通知的正文摘要：Windows 通知只显示一两行，markdown 标记必须剥掉，
+# 否则弹出来的是一堆 * 和 #。代码块整段丢掉——通知里贴代码没有意义。
+_MD_FENCE = re.compile(r"```.*?```", re.S)
+_MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_CODE = re.compile(r"`([^`]*)`")
+_MD_EMPH = re.compile(r"[*_~]{1,3}")
+_MD_HEAD = re.compile(r"(?m)^\s{0,3}#{1,6}\s*")
+_MD_QUOTE = re.compile(r"(?m)^\s{0,3}>\s?")
+_MD_BULLET = re.compile(r"(?m)^\s{0,3}[-*+]\s+")
+# 水平分隔线：--- / *** / ___。不剥的话通知正文里是一串横杠。
+_MD_RULE = re.compile(r"(?m)^[ \t]{0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$")
+
+
+def _plain_preview(text: str, limit: int = 120) -> str:
+    """把 markdown 回复压成一行纯文本摘要（通知正文用）。"""
+    s = str(text or "")
+    if not s.strip():
+        return ""
+    s = _MD_FENCE.sub(" ", s)
+    s = _MD_RULE.sub(" ", s)
+    s = _MD_IMAGE.sub(" ", s)
+    s = _MD_LINK.sub(r"\1", s)
+    s = _MD_CODE.sub(r"\1", s)
+    s = _MD_EMPH.sub("", s)
+    s = _MD_HEAD.sub("", s)
+    s = _MD_QUOTE.sub("", s)
+    s = _MD_BULLET.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > limit:
+        s = s[: max(1, limit - 1)].rstrip() + "…"
+    return s
 
 
 # 本地 Ollama 模型列表缓存（模块级：一台机器一个 Ollama，并行会话实例共享一份）。
@@ -685,6 +721,32 @@ class AgentSession:
     def _is_empty(self) -> bool:
         return not self.turns and len(self.history) <= 1
 
+    def turn_rev(self) -> int:
+        """回合序号（用户提问次数）：通知去重用的签名。
+
+        同一条会话连跑两轮，内容可能一模一样（「继续」→ 同样的收尾话），
+        所以不能用摘要当去重键，得用第几轮。
+        """
+        return sum(1 for t in self.turns if t.get("role") == "user")
+
+    def last_reply_preview(self, limit: int = 120) -> str:
+        """最后一条助手回复的纯文本摘要（后台完成通知的正文）。"""
+        for turn in reversed(self.turns):
+            if turn.get("role") != "assistant":
+                continue
+            events = turn.get("events") or []
+            text = _plain_preview("".join(
+                str(ev.get("text") or "") for ev in events
+                if ev.get("type") == "text"), limit)
+            if text:
+                return text
+            # 只调了工具 / 被中断：也要说清「完成了什么」，不能返回空让前端
+            # 退化成一句「有新消息」——那等于没告诉用户任何东西
+            if any(ev.get("type") == "tool_call" for ev in events):
+                return "（本轮只执行了工具，没有文字回复）"
+            return ""
+        return ""
+
     def list_sessions(self) -> list[dict]:
         return self.store.list()
 
@@ -1298,14 +1360,30 @@ class SessionHub:
                 "current": self._cur.current()}
 
     def statuses(self) -> dict:
-        """会话列表的运行态：{sid: {busy, attention}}。通知徽标的数据源。"""
-        out = {m["id"]: {"busy": False, "attention": False}
+        """会话列表的运行态：{sid: {busy, attention, rev, title, preview}}。
+
+        rev / title / preview 是给桌面通知用的：前端得知道「哪条会话的第几轮
+        跑完了」，才能既弹一条有效提醒、又不每次轮询重复弹（2.5s 一次，
+        光看 attention 布尔值会一直弹）。preview 只在 attention=True 时算，
+        没人会看的会话不必每轮拼一遍文本。
+        """
+        def pack(inst: AgentSession) -> dict:
+            att = bool(inst.attention)
+            return {
+                "busy": inst._busy(),
+                "attention": att,
+                "rev": inst.turn_rev(),
+                "title": inst.title or UNTITLED,
+                "preview": inst.last_reply_preview() if att else "",
+            }
+
+        out = {m["id"]: {"busy": False, "attention": False,
+                         "rev": int(m.get("turns") or 0),
+                         "title": m.get("title") or UNTITLED, "preview": ""}
                for m in self._store.list()}
         for inst in self._all:
             if inst.sid:
-                out[inst.sid] = {"busy": inst._busy(),
-                                 "attention": inst.attention}
+                out[inst.sid] = pack(inst)
         if self._cur.sid:
-            out[self._cur.sid] = {"busy": self._cur._busy(),
-                                  "attention": self._cur.attention}
+            out[self._cur.sid] = pack(self._cur)
         return out

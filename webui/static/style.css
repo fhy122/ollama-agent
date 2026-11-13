@@ -359,6 +359,8 @@ button.ghost, button.primary, button.danger {
 }
 button.ghost:hover { border-color: var(--accent); color: var(--accent); }
 button.ghost.sm, button.primary.sm, button.danger.sm { padding: 5px 11px; font-size: 12.5px; border-radius: 8px; }
+/* 桌面通知：权限按钮跟上面的 select 一样撑满，别缩成一小块贴左边 */
+.notify-perm-btn { width: 100%; margin: 2px 0 6px; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 button.primary:hover { background: var(--accent-hover); }
 button.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
@@ -634,6 +636,13 @@ button:focus-visible, .icon-btn:focus-visible, .ws-item:focus-visible, .ol-item:
 .bubble .md-table tbody tr:nth-child(even) td { background: var(--table-zebra-bg); }
 .bubble .md-table td.nw { white-space: nowrap; overflow-wrap: normal; }
 .bubble .md-table code { font-size: 12px; }
+
+/* 水平分隔线（--- / *** / ___）：模型常用它分段，别显示成三个横杠 */
+.bubble hr, #messages hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
 
 /* 图片 */
 .bubble img, #messages img { cursor: zoom-in; }

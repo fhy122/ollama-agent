@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-334%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-340%20passed-brightgreen)
 ![Runtime](https://img.shields.io/badge/Ollama-localhost%3A11434-8b5cf6)
 ![UI](https://img.shields.io/badge/Web_UI-零框架-orange)
 
@@ -145,6 +145,7 @@ python ollama_agent.py --ui          # 同上（--port 同样可用）
 | 工具/技能 | 输入框下方「工具」chip 一步切模式：全部 / 只对话 / 纯聊天，或逐项勾选进自定义。关掉的工具**不再下发 schema**，是省上下文的主要手段 |
 | 执行确认 | 写/改/删/联网/命令执行工具（`confirm=True`）执行前弹确认框：**允许 / 本回合全部允许 / 拒绝**；默认开启，5 分钟未确认自动拒绝（fail-safe） |
 | 规划提问 | agent 拿不定主意时调 **`ask_user`** 把方案摆成按钮（最多 6 条，每条一句取舍，可附自由输入），点一下就是答复，它拿着答复继续干。弹窗与「执行确认」明确分开：标题「需要你定一下」、没有「全部允许」——**授权一个危险操作 ≠ 替你做决定**。5 分钟不答按「没答复」继续（既不当同意也不当否决，模型会按最保守的选项走并标注待确认）；本轮被打断则立即收尾。CLI 里列编号让人挑。没有交互通道的场合（脚本 / 子代理）工具会说「不支持，别重试」，不会静默编一个答案 |
+| 桌面通知 | 只在**没人在看**的时候弹 Windows 系统通知：窗口最小化、切到别的标签页、或焦点在别的程序（`document.hidden` 或 `hasFocus()=false`）。触发点两个：当前会话**回合结束**、**后台会话跑完**（与列表里 ✦ 徽标同一时刻）。标题是「助手已回复 · 会话名」，正文是剥掉 markdown 的回复摘要（代码块丢弃、截 120 字），同会话用 `tag` 归并成一条，点通知直接切回那条会话。**默认关**，在「设置 → 偏好 → 桌面通知」开启，首次开启时向浏览器申请一次权限；被拒绝后开关自动弹回「关」并说明怎么恢复。免打扰单独一个开关；同一轮只弹一次，两个标签页开同一个应用也只弹一条。页面关掉就收不到——这是网页方案的上限，不是 bug |
 
 **预览接口：** `GET /api/file?path=…`（JSON 预览数据）、`?raw=1`（下载）。只允许工作空间内的路径，
 跨目录访问返回 403；文本上限 400KB，表格取前 200 行 × 30 列。
@@ -940,6 +941,8 @@ python tests/test_ask_user.py         # 规划提问：参数透传/无通道不
 python tests/test_ask_user_ui.py      # 提问弹窗 UI 冒烟（Playwright）：选项按钮/自由输入/跳过/布尔确认不带 text
 python tests/test_file_tree.py        # 工作空间目录树接口：只列一层/目录优先/忽略目录/路径越界/截断/旧接口不变
 python tests/test_file_tree_ui.py     # 目录树 + 加入上下文 UI 冒烟（Playwright，含同名文件各归各目录）
+python tests/test_notify.py           # 通知正文来源：markdown 剥离/截断/后台完成带 rev+title+preview/仅 attention 时算摘要
+python tests/test_notify_ui.py        # 桌面通知 UI 冒烟（Playwright，桩 Notification）：最小化/失焦才弹、正在看不弹、免打扰、去重、点击切会话、跨标签页、权限被拒回弹
 python tests/test_spill.py            # 工具输出落盘（超限截断/豁免清单/取回预览）
 python tests/test_usage.py            # 累计用量口径（重试/子请求计入、缺失不编造、会话存盘恢复）
 python tests/test_todo.py             # 任务清单工具（三态/单活跃/持久化）
@@ -964,3 +967,5 @@ python tests/test_cli_palette_console.py   # 行内面板真控制台验证（Wi
 - 剪贴板/热键仅支持 Windows（ctypes Win32）：取图认位图/PNG 格式，取文件认 Ctrl+C 的 CF_HDROP；复制图片**文件**用 Alt+V 走文件路径也行（模型会 load_image）
 - Alt+V 是全局热键，若被其它软件抢先占用，启动时会提示（用 /paste 替代，或 --no-hotkey 关闭）
 - 多会话并行时，后台会话弹出的执行确认框没人点会等 5 分钟超时自动拒绝——写文件等重要操作建议切回那条会话亲眼确认
+- 桌面通知走浏览器 Notification API：**页面关掉就收不到**，且通知在系统里以浏览器名义出现（图标是浏览器）。要「关掉浏览器也收得到」得做 Python 侧原生通知（打包 + AppUserModelID + 常驻），当前没做
+- 通知只在 `document.hidden` 或 `hasFocus()=false` 时发：如果窗口开着、焦点也在这页，但你在看别的会话，只有列表里的 ✦ 徽标，不弹系统通知

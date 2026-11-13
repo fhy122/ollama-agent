@@ -69,6 +69,7 @@ _RENDER = """(src) => {
     strong: box.querySelectorAll('strong').length,
     links: box.querySelectorAll('a').length,
     tables: box.querySelectorAll('table.md-table').length,
+    hrs: box.querySelectorAll('hr').length,
     text: box.textContent,
   };
   box.remove();
@@ -151,6 +152,14 @@ def main():
                                   "| a | b |\n|---|---|\n| 1 | 2 |")
                 assert r["strong"] == 1 and r["links"] == 1 and r["tables"] == 1, r
                 print("  ok  粗体 / 链接 / 表格照常")
+
+                # 7. 水平分隔线：--- 渲染成 <hr>，且不吃掉表格的 |---|---|
+                r = _render(page, "上\n\n---\n\n| a | b |\n|---|---|\n| 1 | 2 |")
+                assert r["hrs"] == 1 and r["tables"] == 1, r
+                # 紧贴段落也要成线（模型常这么写，中间不空行）
+                r = _render(page, "上\n---\n下")
+                assert r["hrs"] == 1 and "---" not in r["text"], r
+                print("  ok  --- 渲染成 <hr>，表格分隔行没被误伤")
 
                 page.wait_for_timeout(400)   # 等字体请求发起
                 assert not bad, f"本地 KaTeX 资源 404: {bad}"

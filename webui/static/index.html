@@ -336,6 +336,25 @@
              placeholder="留空 = 服务端默认 64；0=禁用、-1=整个上下文">
     </label>
     <p class="drawer-note">仅抑制模型输出里的文字复读，管不了「同一个工具反复调用」（那由 repeat_guard 提醒处理）。工具调用是 JSON，惩罚值调太高可能破坏参数生成，先小步试 1.1 并用工具命中率 A/B 验证。依据：docs.ollama.com/modelfile#valid-parameters-and-values</p>
+    <!-- 桌面通知：只在没人看页面时弹。开关存 localStorage，不占后端配置——
+         换台机器该重新授权一次，本来就不该跟着配置文件跑。 -->
+    <div class="drawer-sec">
+      <div class="sb-title">桌面通知</div>
+      <label class="field">新消息提醒（窗口最小化 / 失焦 / 切到后台时）
+        <select id="set-notify">
+          <option value="off">关 — 只留页面内的 ✦ 徽标</option>
+          <option value="on">开 — 回复完成时弹 Windows 系统通知</option>
+        </select>
+      </label>
+      <label class="field">免打扰
+        <select id="set-notify-dnd">
+          <option value="off">关 — 正常提醒</option>
+          <option value="on">开 — 一律不弹系统通知</option>
+        </select>
+      </label>
+      <button class="ghost notify-perm-btn" id="btn-notify-perm" type="button">申请通知权限</button>
+      <p class="drawer-note" id="notify-note">正在读取通知权限…</p>
+    </div>
     <p class="drawer-note" id="prefs-cap-note"></p>
   </div>
 
