@@ -157,6 +157,7 @@ class ChatClient:
     # 显示一个实际没下发的 num_ctx 等于骗人，用户会以为调了上下文长度。
     supports_num_ctx = False
     supports_think = False
+    supports_repeat_penalty = False   # options.repeat_penalty / options.repeat_last_n
     supports_keep_alive = False
     supports_unload = False
 

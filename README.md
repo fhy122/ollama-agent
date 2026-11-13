@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-204%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-320%20passed-brightgreen)
 ![Runtime](https://img.shields.io/badge/Ollama-localhost%3A11434-8b5cf6)
 ![UI](https://img.shields.io/badge/Web_UI-零框架-orange)
 
@@ -136,10 +136,12 @@ python ollama_agent.py --ui          # 同上（--port 同样可用）
 | 输入队列 | 生成中输入后 Enter **不打断模型，自动排队**（输入框下方出现队列坞，宽度与输入框对齐）：每条可 ✈ 立即注入（走到步边界生效，回答不中断）、✎ 撤回继续编辑、🗑 删除；回合结束剩余消息自动依次续发；队列消息归属各自会话，切走再切回不会错发 |
 | 多会话并行 | 每条对话是独立实例：**一条在生成时可以新建/切到另一条继续聊**，互不抢锁。会话列表实时徽标：● = 正在生成，✦ = 后台跑完待查看（2.5s 轮询），点开即清 |
 | 刷新不断线 | 生成中刷新浏览器（甚至关掉再开）：后端照常跑完整个回合；前端启动先问 `/api/live`，抓到进行中的回合就增量接管画面，已流出的文字不丢 |
-| 模型管理 | 「设置 → 模型管理」两块：**内置**（从 Ollama `/api/tags` 列出本机模型，点一下即切过去；列表走缓存——打开设置零探测秒开，点「刷新」才重新拉取）+ **自定义**（填 `/v1` 地址 + Key + 模型名，接任意 OpenAI 兼容的模型服务端（官方 API、中转服务、vLLM、LM Studio）；可新增/编辑/删除/切换）。「使用中」高亮全局唯一（内置/自定义互斥），切换请求行内转圈反馈 |
+| 输入框快捷入口 | 输入框下方三个 chip，**切换类操作就地完成，不用进设置抽屉**：**模型**（点开浮层，左侧列本机 Ollama 模型与自定义配置，点一下即切；右侧直接调思考模式 / 上下文窗口，改动即时生效）、**执行权限**（默认权限 ↔ 允许完全访问）、**工作空间**（显示并改目录）。点浮层外或 Esc 关闭 |
+| 模型管理 | 「设置 → 模型管理」两块：**内置**（从 Ollama `/api/tags` 列出本机模型，点一下即切过去；列表走缓存——打开设置零探测秒开，点「刷新」才重新拉取）+ **自定义**（填 `/v1` 地址 + Key + 模型名，接任意 OpenAI 兼容的模型服务端（官方 API、中转服务、vLLM、LM Studio）；可新增/编辑/删除/切换）。「使用中」高亮全局唯一（内置/自定义互斥），切换请求行内转圈反馈。**日常切换请用输入框下方的模型 chip；这里只用来新增 / 编辑那些要填地址和 Key 的配置** |
 | 连通性测试 | 新建自定义模型时先点「测试连通性」：只看 `GET /v1/models`，不花对话费；地址错 / Key 错 / 服务没起 / 路径不对**分开报**，每条都给下一步动作 |
-| 模型配置持久化 | 存在 `~/.ollama-agent/config.json`（`OLLAMA_AGENT_CONFIG` 可改路径）。重启后自动回到上次用的那个模型配置，不用重填地址和 Key |
-| 偏好 | 「设置 → 偏好」：单回合最大工具步数、**执行前确认**、工作空间、think、num_ctx、temperature（后三项仅 Ollama 生效，OpenAI 协议下会置灰并说明原因） |
+| 模型配置持久化 | 存在 `~/.ollama-agent/config.json`（`OLLAMA_AGENT_CONFIG` 可改路径）。重启后自动回到上次用的那个模型配置，不用重填地址和 Key；**内置 Ollama 下选中的模型名也单独记住**（顶层 `builtin_model`），进 UI 显示的是上次挑的那个，不是写死的 `qwen3.5:9b`。启动时显式传 `--model` 优先级更高，会盖过这个记忆 |
+| 偏好 | 「设置 → 偏好」：单回合最大工具步数、**执行前确认**、工作空间、**工具与技能启停**、think、num_ctx、temperature、repeat_penalty、repeat_last_n（后五项仅 Ollama 生效，OpenAI 协议下会置灰并说明原因） |
+| 工具/技能 | 输入框下方「工具」chip 一步切模式：全部 / 只对话 / 纯聊天，或逐项勾选进自定义。关掉的工具**不再下发 schema**，是省上下文的主要手段 |
 | 执行确认 | 写/改/删/联网/命令执行工具（`confirm=True`）执行前弹确认框：**允许 / 本回合全部允许 / 拒绝**；默认开启，5 分钟未确认自动拒绝（fail-safe） |
 
 **预览接口：** `GET /api/file?path=…`（JSON 预览数据）、`?raw=1`（下载）。只允许工作空间内的路径，
@@ -169,8 +171,11 @@ python ollama_agent.py --ui          # 同上（--port 同样可用）
 **模型配置存在哪：** `~/.ollama-agent/config.json`（`OLLAMA_AGENT_CONFIG` 可改路径），和会话存档同目录
 但职责不同 —— 会话存档记「聊了什么」，这里记「连哪个模型怎么连」。文件分两段：`profiles` 是自定义模型
 （地址/Key/模型名/推理参数），`ui` 是使用习惯（确认开关、步数、工作空间）；切模型不会把你的确认设置一起重置。
-内置 Ollama **不写进文件**（模型列表不落盘，写进去就会过期；运行期走内存缓存——打开设置
-不探测 Ollama 以免卡顿，点「刷新」或切换内置模型时才真正读 `/api/tags` 并更新缓存）。
+内置 Ollama 的**模型列表不写进文件**（写进去就会过期；运行期走内存缓存——打开设置
+不探测 Ollama 以免卡顿，点「刷新」或切换内置模型时才真正读 `/api/tags` 并更新缓存），
+但顶层 `builtin_model` 只记「上次选中的那一个模型名」：Ollama 协议下每次配置变更由
+`_sync_user_cfg` 落盘，启动时 `_restore_profile` 用它覆盖出厂默认值 —— 让「切换模型那里选的」
+成为重启后界面显示的真值。自定义 profile 生效时仍以该 profile 的 `model` 为准。
 API Key 明文存在该文件、仅靠文件权限保护（POSIX 下 0600），接口回传一律打码，前端拿不到完整 Key；
 编辑时 Key 框留空表示「不修改」。
 
@@ -193,11 +198,16 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
               上限 1048576，超出会被钳到该值（填更大只会 OOM，不是"更聪明"）
               ⚠️ 改 ctx 会触发模型重载，一个会话内别随便改
 --temp        temperature，默认 0.7
+--repeat-penalty  options.repeat_penalty，留空=不下发（用服务端默认）；建议从 1.1 试起
+--repeat-last-n   options.repeat_last_n，留空=不下发；0=禁用、-1=num_ctx
 --img <路径>  给第一条消息附图片，可多次
 -p, --prompt  单次执行（非交互），跑完即退
 -w, --workspace  工作空间目录：相对路径读写的根，默认当前目录
 --max-steps   单回合最大工具步数，默认 12
---no-tools    禁用全部工具，纯聊天
+--tools       工具启用策略：all（默认）/ chat（只对话：只留读文件、读图、联网四件）
+              / none（全关）/ 逗号分隔的工具名（自定义白名单）
+              例：--tools chat   --tools read_file,web_search
+--no-tools    禁用全部工具，纯聊天（等价 --tools none）
 --confirm     写/改/删文件、跑命令、联网前需要人工确认（y/N）
 --no-color    关闭彩色输出
 --hide-think  开思考时也不打印思考过程
@@ -294,7 +304,9 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 /ctx <整数>       设置 num_ctx（0 = 服务端默认；改值触发重载）
 /ws [目录]        查看 / 切换工作空间
 /reset            清空对话历史
-/tools            列出已注册工具
+/tools            查看工具启用状态（✓/✗）
+/tools all|chat|none   整体切换：全部 / 只对话 / 全关
+/tools on|off <名>     单个工具开关（自动切到「自定义」）
 /skill <名称> [问题]  加载技能进对话；带问题则注入后直接让模型答题
 /<技能名> [问题]  快捷调用技能（如 /ui-design-system 设计一个设置页）
 /save <文件>      保存对话历史为 JSON
@@ -391,6 +403,58 @@ UI 只绑定 `127.0.0.1`，不开对外端口。**执行前确认默认开启**�
 | `skill` | **按需加载技能指令**（SKILL.md 工作流文档） | 见下方技能说明 |
 | `verify` | **按编码规范跑机械判据**：语法编译 / 文档断链 / 文档代码块 compile / 跑测试 | 配套内置技能 `coding-standards`，见下 |
 | `todo_write` | **任务清单外置**：pending / in_progress / completed 三态，整表替换、同时只许一个 in_progress | 跨轮次持久（存 `{工作空间}/.ollama-agent/todo.json`），多步任务先写清单再干活 |
+
+### 工具按需启停（只对话模式）
+
+工具 schema 是**每次请求的常驻开销**：19 个工具序列化后约 12,040 字符
+（`python -c "import json,sys;sys.path.insert(0,'.');import tools;from agent.registry import all_specs;print(len(json.dumps(all_specs(),ensure_ascii=False)))"`）。
+纯聊天时这些 schema 白吃上下文，还会让模型时不时想出个工具来调。
+
+四种模式（互斥，`agent/toolpolicy.py`）：
+
+| 模式 | 下发什么 | 适用 |
+|---|---|---|
+| `all`（默认） | 全部 19 个 | 默认，与加这个功能之前完全一致 |
+| `chat` | `read_file` / `load_image` / `web_search` / `browse_url` 四件 | 只想聊、查、看，不想动文件 |
+| `custom` | 勾选出来的白名单 | 例如只留 `read_file` + `web_search` |
+| `none` | 不带 `tools` 字段 | 纯聊天（= 老的 `--no-tools`） |
+
+「只对话」下 schema 从 12,040 字符降到 2,244 字符（**省 81%**）。
+
+**两层拦截，不止一层：** 不下发 schema 决定「模型看得见什么」；`dispatch` 还会检查
+`ctx.tools_allowed`，所以即使模型照着旧对话硬调一个已关掉的工具，也只会收到
+`[已禁用] …` 而不会真的执行（`write_file` 这类有副作用的工具，测过确实没落盘）。
+只靠不下发挡不住小模型的这种惯性。
+
+**技能跟着 `skill` 工具走：** skill 被关掉时，系统提示词里的技能索引也一并省略——
+索引本身是 token，而模型已经没有任何办法加载正文，留着只会让它编造技能内容。
+另有一层 `skills_disabled`：逐个技能关（关掉的技能不进索引，`/` 面板也不列，
+显式点名时返回「已禁用」而不是「找不到」）。
+
+**提示词跟着工具集改口径：** 基础规则写的是「需要读文件/联网时必须调用工具」，
+工具被裁掉后这句话就成了误导。所以系统提示词末尾会按当前集合补一句
+（`本次对话只启用了这些工具：read_file、web_search…`；全关时是
+`没有启用任何工具：不要声称调用工具、不要编造…`），并且「生成文件必须用
+write_file」那条规则只在真有 `write_file` 时才拼进去——不提没有的工具，
+比提了让它去调要省事得多。
+
+三个入口，改完即时生效（WebUI 会重写历史里的 system 消息，不必开新对话）：
+
+```bash
+python ollama_agent.py --tools chat          # 启动即只对话
+python ollama_agent.py --tools read_file,web_search
+python -m webui --tools chat
+```
+```
+你> /tools chat      # 会话中切换
+你> /tools off read_long_doc
+```
+WebUI：输入框下方「工具」chip（模式一目了然，点开是四模式 + 逐项勾选），
+或「设置 → 偏好 → 工具与技能」。策略存在 `~/.ollama-agent/config.json` 的 `ui` 段，
+重启后仍生效；启动时显式 `--tools` 优先于存档（与 `--model` 同一条规则）。
+
+> `--no-tools` 与 `--tools` 同时给时，`--no-tools` 生效（老开关优先，行为不变）；
+> 但界面里切一次模式会把它清掉——不然「切了只对话却还是一个工具都没有」。
 
 ### 写代码闭环（run_command / grep_file / glob_file / edit_file）
 
@@ -683,6 +747,33 @@ socket 超时语义是「两块数据之间的间隔」而非总时长：默认�
 **repeat-tool-reminder（重复调用提醒）。** 同一工具连续以相同参数反复调用（模型打转的典型症状），
 在阈值 [3, 5, 8] 次时往对话里注入提醒（不否决调用，模型自己决定改道）。
 
+**repeat_penalty（解码层抑制复读）。** 「重复」其实有两种，别混为一谈：
+
+| 症状 | 层次 | 归谁管 |
+| --- | --- | --- |
+| 同一段话 / 同一句话翻来覆去地吐 | 解码采样 | `options.repeat_penalty` + `options.repeat_last_n` |
+| 同一个工具用相同参数反复调用 | 决策打转 | `agent/repeat_guard.py` 的提醒（见上） |
+
+两者互不替代：解码惩罚管不了「模型决定再调一次工具」；反过来，提醒也压不住 token 级复读。
+
+参数走 `/api/chat` 的 `options` 下发（本项目直连 HTTP，没有 `ollama create` 那一步，
+所以**不用改 Modelfile**）。官方依据：
+- [Modelfile Reference → Valid Parameters and Values](https://docs.ollama.com/modelfile#valid-parameters-and-values)：
+  `repeat_penalty` 是 float，`Default: 1.0, disabled`，官方示例 `1.1`，「1.5 更强、0.9 更宽松」；
+  `repeat_last_n` 是 int，`Default: 64, 0 = disabled, -1 = num_ctx`。
+- [Ollama API 文档 → POST /api/chat → Advanced parameters](https://github.com/ollama/ollama/blob/main/docs/api.md)：
+  `options` 原文为 "additional model parameters listed in the documentation for the Modelfile such as temperature"；
+  同页 `Generate request (With options)` 说明 "If you want to set custom options for the model at runtime
+  rather than in the Modelfile, you can do so with the `options` parameter"，示例里就含
+  `"repeat_penalty": 1.2` 和 `"repeat_last_n": 33`。请求级 `options` 覆盖 Modelfile 的 `PARAMETER` 默认值。
+
+**默认不下发**（`None` = 沿用服务端默认），改动不改变任何既有行为。原因：工具调用是 JSON，
+含大量重复结构 token（引号、逗号、键名），全局加惩罚可能破坏 function calling；有没有收益要实测，
+不该在没人拍板时偷偷改解码行为。想试的顺序：CLI `--repeat-penalty 1.1 --repeat-last-n 256`
+（或 `/repeat 1.1 256`、WebUI 偏好），再用 `python evals/tool_hit.py` 对比工具命中率决定要不要设成默认。
+`repeat_last_n` 默认只看最近 64 token，长段落复读建议调大；`-1` = 整个 `num_ctx`，代价是每步计算变重。
+OpenAI 兼容后端不下发这两个字段，界面会置灰并说明原因。
+
 **spill：工具输出落盘。** 工具结果超过 `spill_max_chars`（默认 12000，0=关）时全文写入
 `{工作空间}/.ollama-agent/spill/`，上下文里只留头尾摘要 + 取回指引——几千行的 grep/命令输出不再一次性撑爆 context，
 模型需要时再用 read_file 取回全文（`read_file`/`read_long_doc` 的输出豁免，避免套娃；
@@ -754,6 +845,7 @@ ollama-agent/
 │   ├── config.py          #   全局配置（think、ctx、系统提示词…）
 │   ├── client.py          #   Ollama /api/chat 客户端（think 参数、tool_calls、预热）
 │   ├── registry.py        #   工具注册表（@tool 装饰器 + dispatch + 工作空间路径解析）
+│   ├── toolpolicy.py      #   工具/技能启用策略（全部 / 只对话 / 自定义 / 全关 + 按技能开关）
 │   ├── events.py          #   事件发射器抽象（控制台/HTTP 流共用主循环）
 │   ├── docparse.py        #   文档解析（docx/xlsx/pptx/pdf → 文本；pdf 还能渲染某页为 PNG）
 │   ├── longdoc.py         #   长文分段精读（切段/预算/逐段笔记/压缩/出处标注）
@@ -837,6 +929,10 @@ python tests/test_ui_search.py        # 历史对话搜索（Playwright，需装
 python tests/test_ui_reset.py         # 清空/删除对话（Playwright，需装 playwright）
 python tests/test_stream_retry.py     # 断流分类 + 退避重试 + 半截输出续写（假客户端，离线）
 python tests/test_repeat_guard.py     # 重复工具调用提醒（键序无关/阈值/注入时机）
+python tests/test_repeat_penalty.py   # 重复惩罚参数：默认不下发/精确下发/协议隔离/非法值/持久化往返
+python tests/test_builtin_model.py    # 内置模型选择持久化（重启恢复/显式 --model 优先/profile 权威）
+python tests/test_quick_chips.py      # 输入框快捷入口 UI 冒烟（Playwright，含重启后显示所选模型 + 工具策略）
+python tests/test_tool_policy.py      # 工具/技能启停：四模式下发/只对话四件/dispatch 拦截/技能索引联动/持久化
 python tests/test_spill.py            # 工具输出落盘（超限截断/豁免清单/取回预览）
 python tests/test_usage.py            # 累计用量口径（重试/子请求计入、缺失不编造、会话存盘恢复）
 python tests/test_todo.py             # 任务清单工具（三态/单活跃/持久化）

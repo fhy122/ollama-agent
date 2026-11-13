@@ -29,6 +29,8 @@ const state = {
   models: null, // 模型配置清单（内置 Ollama + 自定义 profiles）
   noSearchApi: false, // 后端没有 /api/sessions/search（旧进程），搜索直接给重启提示
   searchQuery: "",    // 搜索态唯一真值：只有用户主动输入才更新，绝不信 input.value
+  skillsOn: true,     // skill 工具是否启用（决定技能索引是否注入）
+  skillsLoaded: false,// /api/skills 是否已返回过（避免首屏把「加载中」画成「没有技能」）
 };
 
 // ---------------- 工具函数 ----------------
@@ -1768,6 +1770,8 @@ function openModelForm(p) {
   $("mf-think").value = (p && p.think) || "off";
   setCtxValue($("mf-ctx"), $("mf-ctx-custom"), mf.ctx);
   $("mf-temp").value = (p && p.temperature != null) ? p.temperature : 0.7;
+  $("mf-repeat-penalty").value = (p && p.repeat_penalty != null) ? p.repeat_penalty : "";
+  $("mf-repeat-last-n").value = (p && p.repeat_last_n != null) ? p.repeat_last_n : "";
   $("mf-model-options").innerHTML = "";
   $("mf-probe-result").textContent = "";
   $("mf-probe-result").className = "probe-result";
@@ -1809,9 +1813,11 @@ function updateMfNote() {
     note.textContent = "走 /api/chat，不需要 Key。别人的 Ollama 要让对方设 " +
       "OLLAMA_HOST=0.0.0.0 才能外部访问。";
   }
-  // num_ctx 只对 Ollama 有意义：显式禁用并说明，免得人填了以为生效
+  // num_ctx / 重复惩罚只对 Ollama 有意义：显式禁用并说明，免得人填了以为生效
   setCtxCap($("mf-ctx"), $("mf-ctx-custom"), p === "ollama", CTX_OFF_HINT, mf.ctx);
   setFieldCap("mf-think", p === "ollama", CTX_OFF_HINT);
+  setFieldCap("mf-repeat-penalty", p === "ollama", CTX_OFF_HINT);
+  setFieldCap("mf-repeat-last-n", p === "ollama", CTX_OFF_HINT);
 }
 
 async function probeModel() {
@@ -1878,6 +1884,10 @@ async function saveModel() {
     think: $("mf-think").value,
     num_ctx: ctx,
     temperature: Number($("mf-temp").value || 0.7),
+    repeat_penalty: $("mf-repeat-penalty").value.trim() === ""
+      ? null : Number($("mf-repeat-penalty").value),
+    repeat_last_n: $("mf-repeat-last-n").value.trim() === ""
+      ? null : Number($("mf-repeat-last-n").value),
   };
   try {
     await api("/api/models/save", payload);
@@ -1964,11 +1974,19 @@ async function loadConfig() {
               CTX_OFF_HINT, c.num_ctx ?? 0);
     $("prefs-cap-note").textContent = caps.think
       ? ""
-      : "当前是 OpenAI 兼容协议：think / num_ctx 属于 Ollama 原生协议，不会下发。要调它们请切换到 Ollama 模型。";
+      : "当前是 OpenAI 兼容协议：think / num_ctx / repeat_penalty / repeat_last_n 属于 Ollama 原生协议，不会下发。要调它们请切换到 Ollama 模型。";
     $("set-temp").value = c.temperature;
+    // 留空 = 不下发（用服务端默认）；别把 null 渲成 0，0 在 repeat_last_n 里是「禁用」，语义完全不同
+    $("set-repeat-penalty").value = c.repeat_penalty ?? "";
+    $("set-repeat-last-n").value = c.repeat_last_n ?? "";
+    setFieldCap("set-repeat-penalty", caps.repeat_penalty, CTX_OFF_HINT);
+    setFieldCap("set-repeat-last-n", caps.repeat_penalty, CTX_OFF_HINT);
     $("set-steps").value = c.max_steps;
     $("set-confirm").value = c.confirm ? "on" : "off";
     $("set-ws").value = c.workspace || "";
+    renderToolPrefs(c);
+    renderSkillPrefs();
+    syncQuickChips(c);
     syncFeatureGate(c.features || []);
   } catch (e) {
     toast("加载配置失败: " + e.message, true);
@@ -1992,6 +2010,13 @@ function syncFeatureGate(features) {
       '<p class="sb-empty">后端是旧进程，没有模型管理接口<br>重启服务（Ctrl+C 后重跑启动命令）即可</p>';
     $("custom-models").innerHTML = "";
   }
+  // 工具启停同理由：旧进程没有 tools.policy，别让人对着一个空清单猜
+  const noToolPolicy = !features.includes("tools.policy");
+  $("set-tool-mode").disabled = noToolPolicy;
+  if (noToolPolicy) {
+    $("set-tool-list").innerHTML =
+      '<p class="qp-note">后端是旧进程，没有工具启停接口。重启服务即可。</p>';
+  }
 }
 
 // 偏好：只提交偏好段。模型参数在「模型管理」里逐配置改，
@@ -2001,6 +2026,12 @@ async function applyConfig() {
     max_steps: Number($("set-steps").value || 12),
     confirm: $("set-confirm").value === "on",
     workspace: $("set-ws").value.trim(),
+    // 工具/技能策略：模式和勾选一起提交。模式是 all/chat/none 时白名单也照传 ——
+    // 它正是「以后切回自定义用哪几个」，不传等于每次切模式都清空一次。
+    tool_mode: $("set-tool-mode").value,
+    tools_enabled: collectTools("#set-tool-list"),
+    skills_disabled: [...document.querySelectorAll('#set-skill-list input[data-skill]')]
+      .filter((b) => !b.checked).map((b) => b.dataset.skill),
   };
   const caps = (state.config && state.config.caps) || {};
   if (caps.think) patch.think = $("set-think").value;
@@ -2010,14 +2041,263 @@ async function applyConfig() {
     patch.num_ctx = ctx;
   }
   patch.temperature = Number($("set-temp").value || 0.7);
+  if (caps.repeat_penalty) {
+    // 空串 = 不下发（用服务端默认）。不能 Number("")=0：repeat_last_n 的 0 是「禁用」，语义相反
+    patch.repeat_penalty = $("set-repeat-penalty").value.trim() === ""
+      ? null : Number($("set-repeat-penalty").value);
+    patch.repeat_last_n = $("set-repeat-last-n").value.trim() === ""
+      ? null : Number($("set-repeat-last-n").value);
+  }
   try {
     await api("/api/config", patch);
     toast("偏好已应用");
     await loadConfig();
+    await loadSkills();          // skills_on 可能随工具模式变了（skill 工具被关）
     loadWorkspaceFiles();
   } catch (e) {
     toast("设置失败: " + e.message, true);
   }
+}
+
+// ============ 输入框下方快捷入口 ============
+// 切换模型 / 改执行权限 / 改工作空间都是一步到位，不进设置抽屉。
+// 只有「配置自定义模型」要填地址、Key、模型名，才走完整表单。
+let quickKind = "";              // "" | "model" | "perm" | "ws"
+let quickModelsFetched = false;  // 本次页面会话是否已真探测过 /api/tags
+
+const THINK_LABEL = {
+  off: "off — 不思考", on: "on — 思考", low: "low", medium: "medium",
+  high: "high", max: "max", auto: "auto — 不传该字段",
+};
+
+function syncQuickChips(c) {
+  $("quick-model-name").textContent = c.model || "未选模型";
+  $("quick-perm-label").textContent = c.confirm ? "默认权限" : "完全访问";
+  // 工具 chip 直接显示当前策略：改了模式不用点开就能看见生效了没有
+  $("quick-tools-label").textContent = c.tool_mode_label || "全部";
+  const ws = c.workspace || ".";
+  $("quick-ws-label").textContent = ws.length > 26 ? "…" + ws.slice(-25) : ws;
+  $("quick-ws-label").title = ws;
+}
+
+function closeQuick() {
+  quickKind = "";
+  const pop = $("quick-pop");
+  pop.classList.add("hidden");
+  pop.innerHTML = "";
+  document.querySelectorAll(".quick-chip").forEach((b) => b.classList.remove("on"));
+}
+
+async function openQuick(kind) {
+  if (quickKind === kind) return closeQuick();
+  quickKind = kind;
+  document.querySelectorAll(".quick-chip").forEach((b) => b.classList.remove("on"));
+  $("quick-" + kind).classList.add("on");
+  $("quick-pop").classList.remove("hidden");
+  renderQuick();
+  // 第一次打开模型面板才真探测 /api/tags（可能几秒），之后走缓存秒开。
+  // 先用已有缓存渲染一版，探测完再重绘，别让用户对着空白等。
+  if (kind === "model") {
+    await loadModels(quickModelsFetched ? {} : { refresh: true });
+    quickModelsFetched = true;
+    if (quickKind === "model") renderQuick();
+  }
+}
+
+function renderQuick() {
+  const pop = $("quick-pop");
+  if (!pop || !quickKind) return;
+  const c = state.config || {};
+  if (quickKind === "model") pop.innerHTML = qpModelHtml(c);
+  else if (quickKind === "perm") pop.innerHTML = qpPermHtml(c);
+  else if (quickKind === "tools") pop.innerHTML = qpToolsHtml(c);
+  else pop.innerHTML = qpWsHtml(c);
+}
+
+function qpCtxOptions(cur) {
+  const n = Number(cur) || 0;
+  let html = CTX_PRESETS.map(([v, label]) =>
+    `<option value="${v}"${v === n ? " selected" : ""}>${esc(label)}</option>`).join("");
+  // 配置文件里的非标准值单独插一项，保证「打开看一眼」不会把它改成某个预设
+  if (n > 0 && !CTX_PRESETS.some(([v]) => v === n)) {
+    html = `<option value="${n}" selected>当前值：${esc(fmtCtx(n))}</option>` + html;
+  }
+  return html;
+}
+
+function qpModelHtml(c) {
+  const mv = state.models || {};
+  const b = mv.builtin || {};
+  const caps = c.caps || {};
+  const models = b.models || [];
+  const profiles = mv.profiles || [];
+  const builtinOn = !!b.active;
+
+  const localRows = models.length
+    ? models.map((name) => {
+      const on = builtinOn && c.model === name;
+      return `<button class="qp-row${on ? " on" : ""}" data-qp="pick-ollama" data-name="${esc(name)}" title="切换到 ${esc(name)}">` +
+        `<span class="qp-name">${esc(name)}</span><span class="qp-sub">本地</span>` +
+        (on ? '<span class="qp-check">✓</span>' : "") + `</button>`;
+    }).join("")
+    : `<p class="qp-note">${b.stale ? "正在读取本地模型…" : "未发现本地模型（ollama pull <模型名> 后点刷新）"}</p>`;
+
+  const customRows = profiles.length
+    ? profiles.map((p) => {
+      const on = p.id === mv.active;
+      return `<button class="qp-row${on ? " on" : ""}" data-qp="pick-profile" data-id="${esc(p.id)}" title="切换到 ${esc(p.name)}">` +
+        `<span class="qp-name">${esc(p.name)}</span>` +
+        `<span class="qp-sub">${esc(p.model || "未填模型")}</span>` +
+        (on ? '<span class="qp-check">✓</span>' : "") + `</button>`;
+    }).join("")
+    : `<p class="qp-note">还没有自定义模型。</p>`;
+
+  const thinks = (c.think_values || Object.keys(THINK_LABEL)).map((k) =>
+    `<option value="${esc(k)}"${k === c.think ? " selected" : ""}>${esc(THINK_LABEL[k] || k)}</option>`).join("");
+  const thinkField = caps.think
+    ? `<label class="qp-field">思考模式<select data-qp="think">${thinks}</select></label>`
+    : `<label class="qp-field field-off">思考模式<select disabled><option>不适用（当前非 Ollama 协议）</option></select></label>`;
+  const ctxField = caps.num_ctx
+    ? `<label class="qp-field">上下文窗口<select data-qp="ctx">${qpCtxOptions(c.num_ctx)}</select></label>`
+    : `<label class="qp-field field-off">上下文窗口<select disabled><option>不适用</option></select></label>`;
+
+  const head = `<div class="qp-head"><span>选择模型</span><span>` +
+    `<button class="qp-btn ghost" data-qp="refresh-models" style="margin:0">刷新</button> ` +
+    `<button class="qp-close" data-qp="close" title="关闭">✕</button></span></div>`;
+  const left = `<div class="qp-list">` +
+    `<div class="qp-sec">本地 Ollama · 已安装</div>${localRows}` +
+    `<div class="qp-sec">自定义模型配置</div>${customRows}` +
+    `<button class="qp-row action" data-qp="new-model">配置自定义模型（新增 / 编辑）</button>` +
+    `</div>`;
+  const right = `<div class="qp-detail">` +
+    `<div class="qp-title">当前：${esc(c.model || "未选模型")}</div>` +
+    `<p class="qp-note">${esc(c.provider || "")} · ${c.confirm ? "执行前确认" : "完全访问"}</p>` +
+    thinkField + ctxField +
+    `<p class="qp-note">思考模式与上下文窗口改动即时生效。改 num_ctx 会触发模型重载，下一次调用可能变慢。</p>` +
+    `<p class="qp-note">切换模型会记住选择，重启后仍显示你挑的那个。</p>` +
+    `</div>`;
+  return head + `<div class="qp-grid">${left}${right}</div>`;
+}
+
+function qpPermHtml(c) {
+  const full = !c.confirm;
+  return `<div class="qp-head"><span>执行权限</span>` +
+    `<button class="qp-close" data-qp="close" title="关闭">✕</button></div>` +
+    `<div class="qp-body">` +
+    `<p class="qp-note" style="margin-top:0">${full
+      ? "当前为完全访问：写/删文件、跑命令、联网会直接执行，不再逐次确认。"
+      : "当前为默认权限：所有操作都在安全约束内进行，写/删文件、跑命令、联网前会请求你的允许。"}</p>` +
+    `<label class="qp-switch"><span>允许完全访问<small class="qp-note" style="display:block">仅建议在本地可信场景开启</small></span>` +
+    `<input type="checkbox" data-qp="perm-full"${full ? " checked" : ""}></label>` +
+    `<p class="qp-note">切换即时生效并会记住（重启后仍保持）。</p></div>`;
+}
+
+function qpWsHtml(c) {
+  return `<div class="qp-head"><span>工作空间目录</span>` +
+    `<button class="qp-close" data-qp="close" title="关闭">✕</button></div>` +
+    `<div class="qp-body">` +
+    `<p class="qp-note" style="margin-top:0">相对路径都以这里为根。改动会新开一条对话，旧对话仍留在历史列表里。</p>` +
+    `<label class="qp-field">目录<input type="text" id="qp-ws-input" value="${esc(c.workspace || "")}" placeholder="例如 D:/docs"></label>` +
+    `<button class="qp-btn" data-qp="ws-apply">应用</button></div>`;
+}
+
+// ---------------- 工具 / 技能 ----------------
+// 模式只是「快捷组合」，真正下发给模型的是勾选出来的白名单：
+// 选「只对话」= 把白名单设成那四件，选「自定义」= 按下面的勾选来。
+const TOOL_MODES = [
+  ["all", "全部工具", "读写、命令、联网全给（默认）"],
+  ["chat", "只对话", "只留读文件 / 读图 / 联网"],
+  ["custom", "自定义", "按下面勾选的来"],
+  ["none", "纯聊天", "一个工具都不给"],
+];
+
+function toolRowsHtml(groups, forPrefs) {
+  if (!groups || !groups.length) return '<p class="qp-note">没有可配置的工具</p>';
+  return groups.map((g) => `<div class="${forPrefs ? "tool-group" : "qp-sec"}">${esc(g.label)}</div>` +
+    g.tools.map((t) => `<label class="${forPrefs ? "tool-item" : "qp-row"}" title="${esc(t.description || "")}">` +
+      `<input type="checkbox" data-qp="tool-toggle" data-name="${esc(t.name)}"${t.enabled ? " checked" : ""}>` +
+      `<span class="${forPrefs ? "t-name" : "qp-name"}">${esc(t.name)}</span></label>`).join("")).join("");
+}
+
+function qpToolsHtml(c) {
+  const mode = c.tool_mode || "all";
+  const rows = TOOL_MODES.map(([k, label, sub]) =>
+    `<button class="qp-row${mode === k ? " on" : ""}" data-qp="tool-mode" data-mode="${k}">` +
+    `<span class="qp-name">${esc(label)}</span>` +
+    `<span class="qp-sub">${esc(sub)}</span>` +
+    (mode === k ? '<span class="qp-check">✓</span>' : "") + `</button>`).join("");
+  const hint = mode === "custom"
+    ? "只下发下面勾选的工具。"
+    : `当前是「${esc((TOOL_MODES.find((m) => m[0] === mode) || [0, mode])[1])}」，` +
+      "下面勾选在切到「自定义」后生效。";
+  return `<div class="qp-head"><span>工具与技能</span>` +
+    `<button class="qp-close" data-qp="close" title="关闭">✕</button></div>` +
+    `<div class="qp-grid"><div class="qp-list">` +
+    `<div class="qp-sec">模式</div>${rows}` +
+    `<p class="qp-note">关掉的工具不会把 schema 下发给模型 —— 这是省上下文的主要来源。</p></div>` +
+    `<div class="qp-detail"><div class="qp-title">单独开关</div>` +
+    `<p class="qp-note" style="margin-top:2px">${hint}</p>` +
+    `<div class="tool-list">${toolRowsHtml(c.tool_groups, false)}</div>` +
+    `<button class="qp-btn ghost" data-qp="tools-more">更多工具与技能设置</button>` +
+    `</div></div>`;
+}
+
+function collectTools(scopeSel) {
+  return [...document.querySelectorAll(scopeSel + ' input[data-qp="tool-toggle"]')]
+    .filter((b) => b.checked).map((b) => b.dataset.name);
+}
+
+function renderToolPrefs(c) {
+  const list = $("set-tool-list");
+  if (!list) return;
+  list.innerHTML = toolRowsHtml(c.tool_groups, true);
+  $("set-tool-mode").value = c.tool_mode || "all";
+  const mode = c.tool_mode || "all";
+  $("tool-mode-note").textContent = mode === "custom"
+    ? "只把下面勾选的工具下发给模型。"
+    : `当前模式「${(TOOL_MODES.find((m) => m[0] === mode) || [0, mode])[1]}」会覆盖下面的勾选；`
+      + "勾选任何一项会自动切到「自定义」。";
+}
+
+function renderSkillPrefs() {
+  const box = $("set-skill-list");
+  if (!box) return;
+  const on = state.skillsOn !== false;
+  if (!skillsCache.length) {
+    box.innerHTML = state.skillsLoaded
+      ? '<p class="qp-note">这个工作空间没有技能。</p>'
+      : '<p class="qp-note">加载中…</p>';
+  } else {
+    box.innerHTML = skillsCache.map((s) =>
+      `<label class="tool-item${s.enabled === false ? " off" : ""}" title="${esc(s.desc || "")}">` +
+      `<input type="checkbox" data-skill="${esc(s.name)}"${s.enabled === false ? "" : " checked"}>` +
+      `<span class="t-name">${esc(s.display || s.name)}</span>` +
+      `<span class="t-tag">${esc(s.name)}</span></label>`).join("");
+  }
+  box.classList.toggle("disabled", !on);
+  $("skill-note").textContent = on
+    ? "只有「名字 + 一句话描述」进系统提示词，正文由模型按需加载。关掉的技能不会出现在索引里。"
+    : "当前 «skill» 工具已关闭：技能索引不再注入，模型也没有办法加载正文。"
+      + "要恢复请把工具模式改回「全部」或勾上 skill。";
+}
+
+async function quickPatch(patch, note) {
+  try {
+    await api("/api/config", patch);
+    await loadConfig();            // 内部会 syncQuickChips，chip 文字跟着变
+    // 工具模式变了 → skill 可能被一起关掉，技能清单的置灰状态要跟着变
+    if ("tool_mode" in patch || "tools_enabled" in patch) await loadSkills();
+    if (note) toast(note);
+    renderQuick();
+  } catch (e) {
+    toast("设置失败：" + e.message, true);
+  }
+}
+
+function openSettingsWithModelForm() {
+  $("btn-settings").click();      // 打开抽屉并刷新配置 / 模型清单
+  switchTab("models");
+  openModelForm(null);
 }
 
 // 能力标记：不适用时 chip 保留参数名并标注，而不是留个假数值。
@@ -2047,7 +2327,8 @@ function setFieldCap(id, supported, reason) {
 // 协议不支持 num_ctx / think 时给的理由：要包含「为什么」和「怎么才能改」。
 // 只写「不支持」的话，用户只能靠猜。
 const CTX_OFF_HINT =
-  "当前是 OpenAI 兼容协议，这两个参数属于 Ollama 原生协议，不会下发。" +
+  "当前是 OpenAI 兼容协议：think / num_ctx / repeat_penalty / repeat_last_n " +
+  "属于 Ollama 原生协议的 options 参数，不会下发。" +
   "要调它们请把「协议类型」切回 Ollama。";
 
 // 标签页切换：模型管理 / 偏好
@@ -2070,8 +2351,17 @@ const COMMANDS = [
 let skillsCache = [];
 
 async function loadSkills() {
-  try { skillsCache = (await api("/api/skills")).skills || []; }
-  catch { skillsCache = []; }
+  try {
+    const d = await api("/api/skills");
+    // 后端会连「已关闭」的技能一起返回（带 enabled=false）：设置面板要能重新勾上，
+    // 「查不到」和「被关掉」在界面上必须能区分，否则用户会以为技能丢了。
+    skillsCache = d.skills || [];
+    state.skillsOn = d.skills_on !== false;
+  } catch {
+    skillsCache = [];
+  }
+  state.skillsLoaded = true;
+  renderSkillPrefs();
 }
 
 function closePal() {
@@ -2086,7 +2376,8 @@ function renderPal() {
     const cmds = COMMANDS.filter((c) =>
       !q || c.name.includes(q) || c.desc.toLowerCase().includes(q));
     const hit = [], miss = [];
-    for (const s of skillsCache) {
+    // 被关掉的技能不出现在 / 面板里：列出来点了也加载不了，只会让人以为坏了
+    for (const s of skillsCache.filter((x) => x.enabled !== false)) {
       const n = s.name.toLowerCase(), d = (s.display || "").toLowerCase();
       (q && !(n.startsWith(q) || d.startsWith(q) || n.includes(q) || d.includes(q)
         || (s.desc || "").toLowerCase().includes(q)) ? miss : hit).push(s);
@@ -2421,6 +2712,11 @@ $("btn-close-settings").onclick = () => {
   closeModelForm();      // 关抽屉时收起表单，下次打开不残留上次编辑的内容
 };
 $("btn-apply").onclick = applyConfig;
+// 在偏好里勾/取消任何工具 → 模式自动切到「自定义」，
+// 否则用户勾完了、模式还停在「全部」，改了半天不生效
+$("set-tool-list").addEventListener("change", (e) => {
+  if (e.target.dataset.qp === "tool-toggle") $("set-tool-mode").value = "custom";
+});
 $("btn-refresh-models").onclick = () => {
   $("builtin-note").textContent = "刷新中…";
   loadConfig();
@@ -2437,6 +2733,91 @@ $("btn-mf-cancel").onclick = closeModelForm;
 $("btn-mf-delete").onclick = deleteModel;
 $("mf-provider").onchange = updateMfNote;
 $("mf-host").oninput = updateMfNote;
+// ---- 输入框下方快捷入口的事件 ----
+$("quick-model").onclick = () => openQuick("model");
+$("quick-perm").onclick = () => openQuick("perm");
+$("quick-tools").onclick = () => openQuick("tools");
+$("quick-ws").onclick = () => openQuick("ws");
+$("quick-settings").onclick = () => $("btn-settings").click();
+
+$("quick-pop").addEventListener("click", async (e) => {
+  const t = e.target.closest("[data-qp]");
+  if (!t) return;
+  const act = t.dataset.qp;
+  if (act === "close") return closeQuick();
+  if (act === "pick-ollama") {
+    closeQuick();
+    await activateOllama(t.dataset.name, null);
+    return;
+  }
+  if (act === "pick-profile") {
+    closeQuick();
+    await activateModel(t.dataset.id, null);
+    return;
+  }
+  if (act === "new-model") {
+    closeQuick();
+    openSettingsWithModelForm();
+    return;
+  }
+  if (act === "refresh-models") {
+    await loadModels({ refresh: true });
+    quickModelsFetched = true;
+    renderQuick();
+    return;
+  }
+  if (act === "ws-apply") {
+    const v = ($("qp-ws-input")?.value || "").trim();
+    if (!v) return toast("填一个存在的目录路径", true);
+    await quickPatch({ workspace: v }, "工作空间已更新");
+    loadWorkspaceFiles();
+  }
+  if (act === "tool-mode") {
+    const m = t.dataset.mode;
+    if (m === "custom") {
+      // 「自定义」= 把当前已启用的那几个固化成白名单，否则切过去会变成一个都不给
+      const cur = ((state.config || {}).tool_groups || [])
+        .flatMap((g) => g.tools).filter((x) => x.enabled).map((x) => x.name);
+      return quickPatch({ tool_mode: "custom", tools_enabled: cur }, "已切到自定义模式");
+    }
+    return quickPatch({ tool_mode: m }, "工具模式已更新");
+  }
+  if (act === "tools-more") {
+    closeQuick();
+    $("btn-settings").click();
+    switchTab("prefs");
+    return;
+  }
+});
+
+$("quick-pop").addEventListener("change", (e) => {
+  const act = e.target.dataset.qp;
+  if (act === "think") return quickPatch({ think: e.target.value }, "思考模式已更新");
+  if (act === "ctx") {
+    return quickPatch({ num_ctx: Number(e.target.value) },
+      "上下文窗口已更新（可能触发模型重载）");
+  }
+  if (act === "perm-full") {
+    return quickPatch({ confirm: !e.target.checked },
+      e.target.checked ? "已允许完全访问" : "已恢复执行前确认");
+  }
+  if (act === "tool-toggle") {
+    // 勾任何一个都意味着「按勾选来」，所以顺带切到自定义模式
+    return quickPatch({ tool_mode: "custom", tools_enabled: collectTools("#quick-pop") },
+      "工具已更新");
+  }
+});
+
+// 点浮层外 / Esc 关闭；chip 自身不算「外部」，否则刚打开就被关掉
+document.addEventListener("click", (e) => {
+  if (!quickKind) return;
+  if (e.target.closest("#quick-pop") || e.target.closest(".quick-chip")) return;
+  closeQuick();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && quickKind) closeQuick();
+});
+
 // 两个 num_ctx 下拉的选项由同一份预设生成，事件只绑一次
 initCtxControl($("set-ctx"), $("set-ctx-custom"));
 initCtxControl($("mf-ctx"), $("mf-ctx-custom"));

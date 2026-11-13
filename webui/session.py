@@ -6,11 +6,13 @@ import threading
 import time
 from pathlib import Path
 
-from agent import usage
+from agent import toolpolicy, usage
 from agent.backends import create_client
-from agent.config import DEFAULT_HOST, DEFAULT_MODEL, MAX_CTX, THINK_VALUES, AgentConfig
+from agent.config import (DEFAULT_HOST, DEFAULT_MODEL, MAX_CTX, THINK_VALUES,
+                          AgentConfig, parse_repeat_last_n, parse_repeat_penalty)
 from agent.loop import new_history, run_turn
 from agent.registry import ToolContext
+from agent.toolpolicy import normalize_mode, split_names
 from agent.userconfig import BUILTIN_ID, ConfigStore, mask_key, to_agent_patch
 from webui.store import UNTITLED, SessionStore, make_title, new_id
 
@@ -24,6 +26,8 @@ FEATURES = (
     "file.preview",      # 文件预览 / 下载
     "provider.switch",   # 设置面板里切换 Ollama / OpenAI 兼容后端
     "models.profiles",   # 模型配置管理：多配置增删改 + 持久化
+    "options.repeat",    # 重复惩罚（repeat_penalty / repeat_last_n）可在偏好里调
+    "tools.policy",      # 工具/技能按需启停（只对话模式、自定义白名单）
 )
 
 
@@ -285,6 +289,13 @@ class AgentSession:
         # 安全口默认开：写/删/联网工具执行前人工确认（设置面板可关）。
         # 持久化在配置文件的 ui 段，不随模型配置切换而重置。
         self.confirm = bool(self.user_cfg.get("ui", {}).get("confirm", True))
+        # 工具 / 技能策略：同样存在 ui 段，重启后仍生效。
+        # 启动时显式 --tools 优先（与 --model 同一条规则），否则读上次的选择。
+        _ui = self.user_cfg.get("ui") or {}
+        if not getattr(self.cfg, "_tools_explicit", False):
+            self.cfg.tool_mode = normalize_mode(_ui.get("tool_mode"))
+            self.cfg.tools_enabled = split_names(_ui.get("tools_enabled"))
+        self.cfg.skills_disabled = split_names(_ui.get("skills_disabled"))
         self.gate = ConfirmGate()
         self.ctx = ToolContext(
             confirm=self.confirm,
@@ -294,7 +305,7 @@ class AgentSession:
             cfg=self.cfg,
             client=self.client,   # 长文精读要自己发子请求；换后端时同步更新
         )
-        self.history = new_history(str(self.workspace))
+        self.history = new_history(str(self.workspace), self.cfg)
         self.lock = threading.Lock()
         self.cancel_event = threading.Event()   # 打断开关：置位即停当前回合
         self.pending_clip: "queue.Queue[dict]" = queue.Queue()  # 热键剪贴板暂存
@@ -336,9 +347,14 @@ class AgentSession:
         pid = self.user_cfg.get("active") or ""
         if pid == BUILTIN_ID:
             # 内置 Ollama 不落盘成 profile：协议固定 ollama，
-            # 地址沿用 cfg 默认（用户可以用「偏好」里的工作空间以外的东西改不到它，
-            # 想连别人的 Ollama 就新建一条自定义配置）。
+            # 地址沿用 cfg 默认（想连别人的 Ollama 就新建一条自定义配置）。
             self.cfg.provider = "ollama"
+            # 但「上次在模型选择里挑的是哪个」必须恢复 —— 以前这里直接 return，
+            # 进 UI 永远显示启动参数 / DEFAULT_MODEL（qwen3.5:9b），
+            # 用户刚切的模型一刷新就没了。显式 --model 优先级更高，别覆盖。
+            saved = str(self.user_cfg.get("builtin_model") or "").strip()
+            if saved and not getattr(self.cfg, "_model_explicit", False):
+                self.cfg.model = saved
             return
         prof = self.config_store.get_profile(self.user_cfg, pid)
         if not prof:
@@ -362,6 +378,9 @@ class AgentSession:
             self.cfg.temperature = float(prof.get("temperature", self.cfg.temperature))
         except (TypeError, ValueError):
             pass
+        # 重复惩罚：只做「读档」，校验统一交给 update_config，别在这里维护第二套规则
+        self.cfg.repeat_penalty = parse_repeat_penalty(prof.get("repeat_penalty"))
+        self.cfg.repeat_last_n = parse_repeat_last_n(prof.get("repeat_last_n"))
 
     def profiles_view(self, refresh_builtin: bool = False) -> dict:
         """给前端的模型配置清单：Key 一律打码，内置条目带缓存的模型列表。
@@ -383,7 +402,8 @@ class AgentSession:
         for p in cfg.get("profiles") or []:
             row = {k: p.get(k) for k in
                    ("id", "name", "provider", "host", "model",
-                    "think", "num_ctx", "temperature")}
+                    "think", "num_ctx", "temperature",
+                    "repeat_penalty", "repeat_last_n")}
             key = p.get("api_key") or ""
             row["has_key"] = bool(key)
             row["api_key_masked"] = mask_key(key)   # 完整 Key 永不出本进程
@@ -576,7 +596,7 @@ class AgentSession:
         self.created = float(data.get("created") or time.time())
         self.turns = list(data.get("turns") or [])
         hist = data.get("history")
-        self.history = hist if isinstance(hist, list) and hist else new_history(str(self.workspace))
+        self.history = hist if isinstance(hist, list) and hist else new_history(str(self.workspace), self.cfg)
         # 老会话没有 usage 字段 → 空账本。刻意不从 turns 里的旧 stats 求和回填：
         # 那些事件本就漏了重试/子请求，回填只会把不完整的旧口径伪装成完整账单。
         self.usage = usage.UsageLedger.from_dict(data.get("usage"))
@@ -644,7 +664,7 @@ class AgentSession:
             return {"error": "正在生成，先停止本轮回答再新建对话", "code": 409}
         with self.lock:
             if save and self._is_empty():
-                self.history = new_history(str(self.workspace))
+                self.history = new_history(str(self.workspace), self.cfg)
                 self.turns = []
                 self.title = UNTITLED
                 self.usage = usage.UsageLedger()
@@ -657,7 +677,7 @@ class AgentSession:
             self.title = UNTITLED
             self.created = time.time()
             self.turns = []
-            self.history = new_history(str(self.workspace))
+            self.history = new_history(str(self.workspace), self.cfg)
             self.cancel_event.clear()
             self.usage = usage.UsageLedger()
             usage.UsageLedger.attach(self.client, self.usage)
@@ -676,7 +696,7 @@ class AgentSession:
                 self.turns = []
                 self.title = UNTITLED
                 self.created = time.time()
-                self.history = new_history(str(self.workspace))
+                self.history = new_history(str(self.workspace), self.cfg)
         return {"ok": ok, "sessions": self.list_sessions(), "current": self.current()}
 
     # ---------- 对话 ----------
@@ -800,9 +820,12 @@ class AgentSession:
         """加载技能并注入历史（等价 CLI /skill）。返回 {ok, chars|error}。"""
         from agent.registry import dispatch
         with self.lock:
+            # 回合外调用：按当前策略刷新一次，否则沿用上一回合的允许集合
+            # （上一回合若是「只对话」，这里会被误判成「skill 已禁用」）
+            self.ctx.tools_allowed = toolpolicy.allowed_names(self.cfg)
             res = dispatch("skill", {"name": name}, self.ctx)
             text = res.text
-            if text.startswith("[错误]") or text.startswith("[提示]"):
+            if text.startswith(("[错误]", "[提示]", "[已禁用]")):
                 return {"ok": False, "error": text}
             self.history.append({
                 "role": "user",
@@ -822,7 +845,7 @@ class AgentSession:
         with self.lock:
             old = self.sid
             self.sid = ""
-            self.history = new_history(str(self.workspace))
+            self.history = new_history(str(self.workspace), self.cfg)
             self.turns = []
             self.title = UNTITLED
             self.created = time.time()
@@ -909,6 +932,17 @@ class AgentSession:
                     self.client.temperature = self.cfg.temperature
                 except (TypeError, ValueError):
                     pass
+            # 重复惩罚：只在真的会下发的协议上写配置。前端在 OpenAI 模式下
+            # 会把禁用的输入框提交成 null，直接写就会把用户给 Ollama 存的 1.1 清掉
+            # —— 和 num_ctx 那个坑一模一样。
+            if "repeat_penalty" in patch:
+                if getattr(self.client, "supports_repeat_penalty", False):
+                    self.cfg.repeat_penalty = parse_repeat_penalty(patch["repeat_penalty"])
+                    self.client.repeat_penalty = self.cfg.repeat_penalty
+            if "repeat_last_n" in patch:
+                if getattr(self.client, "supports_repeat_penalty", False):
+                    self.cfg.repeat_last_n = parse_repeat_last_n(patch["repeat_last_n"])
+                    self.client.repeat_last_n = self.cfg.repeat_last_n
             if "max_steps" in patch:
                 try:
                     self.cfg.max_steps = max(1, int(patch["max_steps"]))
@@ -917,6 +951,21 @@ class AgentSession:
             if "confirm" in patch:
                 self.confirm = bool(patch["confirm"])
                 self.ctx.confirm = self.confirm
+            # ---- 工具 / 技能策略 ----
+            # 三个字段各自独立：模式决定「哪些工具可用」，skills_disabled 是
+            # 「哪几个技能可见」的第二层开关，互不覆盖。
+            if any(k in patch for k in ("tool_mode", "tools_enabled", "skills_disabled")):
+                if "tool_mode" in patch:
+                    self.cfg.tool_mode = normalize_mode(patch["tool_mode"],
+                                                       self.cfg.tool_mode)
+                    # 命令行 --no-tools 的老开关让位给显式选择的模式，
+                    # 否则界面上切了「只对话」却仍然一个工具都不下发。
+                    self.cfg.no_tools = False
+                if "tools_enabled" in patch:
+                    self.cfg.tools_enabled = split_names(patch["tools_enabled"])
+                if "skills_disabled" in patch:
+                    self.cfg.skills_disabled = split_names(patch["skills_disabled"])
+                self._refresh_system_prompt()
             if "workspace" in patch and str(patch["workspace"]).strip():
                 p = Path(str(patch["workspace"])).expanduser().resolve()
                 if p.is_dir() and str(p) != str(self.workspace):
@@ -928,9 +977,24 @@ class AgentSession:
                     self.title = UNTITLED
                     self.created = time.time()
                     self.turns = []
-                    self.history = new_history(str(p))
+                    self.history = new_history(str(p), self.cfg)
             self._sync_user_cfg()
         return self.snapshot()
+
+    def _refresh_system_prompt(self) -> None:
+        """按当前策略重写历史里的 system 消息。
+
+        技能索引是拼在 system 消息里的：改了工具/技能开关却不重写，
+        索引会一直停在上一次的状态 —— 关掉技能后模型仍能看到技能名，
+        打开后模型却看不到（要到下一条新对话才生效），两种都很难解释。
+        """
+        if not isinstance(getattr(self, "history", None), list) or not self.history:
+            return
+        fresh = new_history(str(self.workspace), self.cfg)[0]
+        if self.history[0].get("role") == "system":
+            self.history[0] = fresh
+        else:
+            self.history.insert(0, fresh)
 
     def _sync_user_cfg(self) -> None:
         """把当前生效的配置回写进 user_cfg 并落盘。
@@ -958,11 +1022,23 @@ class AgentSession:
                 p["think"] = self.cfg.think
                 p["num_ctx"] = self.cfg.num_ctx
                 p["temperature"] = self.cfg.temperature
+                p["repeat_penalty"] = self.cfg.repeat_penalty
+                p["repeat_last_n"] = self.cfg.repeat_last_n
                 break
+        # 内置 Ollama 不落成 profile，但「当前选中的本地模型名」要单独记住。
+        # 不限定 pid == BUILTIN_ID：从自定义配置里直接点本地模型切换时，
+        # active 可能还指着那条 profile，选中的模型名同样不该丢。
+        if self.cfg.resolved_provider == "ollama" and self.cfg.model:
+            cfg["builtin_model"] = self.cfg.model
         ui = cfg.setdefault("ui", {})
         ui["confirm"] = self.confirm
         ui["max_steps"] = self.cfg.max_steps
         ui["workspace"] = str(self.workspace)
+        # 工具/技能策略：重启后仍生效。不写这三项的话，用户关掉一堆工具、
+        # 第二天打开又全回来了，会以为「设置没保存」。
+        ui["tool_mode"] = normalize_mode(getattr(self.cfg, "tool_mode", "all"))
+        ui["tools_enabled"] = split_names(getattr(self.cfg, "tools_enabled", None))
+        ui["skills_disabled"] = split_names(getattr(self.cfg, "skills_disabled", None))
         self._persist()
 
     def _rebuild_client(self) -> None:
@@ -989,6 +1065,7 @@ class AgentSession:
         cli = self.client
         ctx_ok = getattr(cli, "supports_num_ctx", False)
         think_ok = getattr(cli, "supports_think", False)
+        rep_ok = getattr(cli, "supports_repeat_penalty", False)
         return {
             "model": self.cfg.model,
             "think": self.cfg.think if think_ok else None,
@@ -996,12 +1073,22 @@ class AgentSession:
             "caps": {
                 "num_ctx": ctx_ok,
                 "think": think_ok,
+                "repeat_penalty": rep_ok,
                 "keep_alive": getattr(cli, "supports_keep_alive", False),
                 "unload": getattr(cli, "supports_unload", False),
             },
             "temperature": self.cfg.temperature,
+            "repeat_penalty": self.cfg.repeat_penalty if rep_ok else None,
+            "repeat_last_n": self.cfg.repeat_last_n if rep_ok else None,
             "max_steps": self.cfg.max_steps,
             "confirm": self.confirm,
+            # 工具 / 技能策略：界面据此渲染开关，chip 据此显示当前模式
+            "tool_mode": toolpolicy.mode_of(self.cfg),
+            "tool_mode_label": toolpolicy.describe(self.cfg),
+            "tool_count": toolpolicy.enabled_count(self.cfg),
+            "tools_enabled": split_names(getattr(self.cfg, "tools_enabled", None)),
+            "skills_disabled": split_names(getattr(self.cfg, "skills_disabled", None)),
+            "skills_on": toolpolicy.skill_tool_on(self.cfg),
             "workspace": str(self.workspace),
             "host": self.cfg.host,
             "provider": self.cfg.resolved_provider,

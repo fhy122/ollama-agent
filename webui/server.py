@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agent import HIDDEN_DIRNAME
+from agent import HIDDEN_DIRNAME, toolpolicy
 from agent.config import THINK_VALUES, AgentConfig
 from webui.session import SessionHub
 from webui.stream import StreamEmitter
@@ -183,10 +183,14 @@ def _full_config(app) -> dict:
     """
     snap = app.session.snapshot()
     snap["models"] = _safe_list_models(app.session.client)
+    cfg = app.session.cfg
+    # 工具清单带上「当前是否启用 + 分组」：界面直接照着渲染开关，
+    # 不用自己再比对一遍 tool_mode / tools_enabled（两份逻辑迟早会走偏）。
     snap["tools"] = [
         {"name": t.name, "description": t.description}
         for t in tools_pkg.all_tools()
     ]
+    snap["tool_groups"] = toolpolicy.groups(cfg)
     snap["think_values"] = list(THINK_VALUES)
     return snap
 
@@ -375,7 +379,15 @@ def make_handler(app: "WebUIApp"):
                 self.send_json({"statuses": app.session.statuses()})
             elif path == "/api/skills":
                 from tools.skill import list_skills
-                self.send_json({"skills": list_skills(str(app.session.workspace))})
+                cfg = app.session.cfg
+                off = toolpolicy.disabled_skills(cfg)
+                rows = list_skills(str(app.session.workspace))
+                for r in rows:
+                    r["enabled"] = r["name"] not in off
+                # enabled=false 的也一并返回：设置面板要能看见并重新勾上，
+                # 「看不见=被关掉」在界面上无法区分，用户会以为技能丢了
+                self.send_json({"skills": rows,
+                                "skills_on": toolpolicy.skill_tool_on(cfg)})
             elif path == "/api/sessions":
                 self.send_json({"sessions": app.session.list_sessions(),
                                 "current": app.session.current()})

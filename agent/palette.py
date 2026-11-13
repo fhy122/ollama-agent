@@ -23,6 +23,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("think", "思考模式 <off|on|low|medium|high|max|auto>"),
     ("model", "切换模型 <名>"),
     ("ctx", "设置 num_ctx <整数>"),
+    ("repeat", "重复惩罚 <penalty> [last_n]；留空=恢复服务端默认"),
     ("ws", "查看/切换工作空间 [目录]"),
     ("reset", "清空对话历史"),
     ("tools", "列出已注册工具"),

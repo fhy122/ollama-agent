@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-204%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-320%20passed-brightgreen)
 ![Runtime](https://img.shields.io/badge/Ollama-localhost%3A11434-8b5cf6)
 ![UI](https://img.shields.io/badge/Web_UI-zero--framework-orange)
 
@@ -39,6 +39,7 @@ function calling + **thinking off by default** (`think=false`) + file I/O + visi
 - **Stream resilience** — broken streams are classified and retried with backoff (half-printed output is kept and continued); a socket idle budget (default 120 s) distinguishes "model thinking" from "connection dead"; repeated identical tool calls trigger gentle reminders; oversized tool output spills to disk with a retrievable preview; per-step time context keeps the model aware of elapsed time.
 - **19 built-in tools** — read/write/edit/delete files (text, Word, Excel, PPT, PDF), run shell commands, grep/glob, render spreadsheets to PNG, load images for vision models, clipboard screenshots (global hotkey), browse URLs, web search (Bing + Baidu in parallel), on-demand skill loading.
 - **Small-model friendly** — `think=false` by default; concise system prompt (no hardcoded tool rules — tool policies live in each tool's description); images are stripped from history between turns to keep the KV cache small.
+- **Tool policy / chat-only mode** — `--tools chat` (or the 工具 chip in the Web UI, or `/tools chat`) sends only `read_file` / `load_image` / `web_search` / `browse_url`; tool schemas drop from 12,040 to 2,244 chars (81% saved). `custom` takes an explicit allowlist, `none` sends no `tools` field at all. Disabled tools are also blocked at dispatch time, and the skill index is dropped whenever the `skill` tool is off.
 - **Safety rails** — destructive tools (`write_file` / `edit_file` / `delete_file` / `run_command` / network) require confirmation before execution (y/N in CLI, dialog in Web UI); `delete_file` refuses paths outside the workspace and non-recursive deletion of non-empty directories.
 - **Persistence** — each conversation is a JSON file on disk; tool calls, code blocks and reasoning are replayed exactly when you switch back to an old session.
 - **Windows conveniences** — global `Alt+V` hotkey brings clipboard screenshots/files into the chat; `/` command palette and `@` file references with inline completion.

@@ -16,6 +16,8 @@ from agent.config import DEFAULT_CTX, DEFAULT_HOST, DEFAULT_MODEL, MAX_TOOL_STEP
 from agent.console import color, setup_stdio
 from agent.loop import new_history, run_turn
 from agent.registry import ToolContext
+from agent import toolpolicy
+from agent.toolpolicy import MODE_CUSTOM, MODES
 
 HELP_TEXT = """命令:
   /                 列出指令与技能（本清单 + 技能库）
@@ -25,9 +27,12 @@ HELP_TEXT = """命令:
   /think <模式>     off|on|low|medium|high|max|auto   （off=默认关思考；auto=不传该字段）
   /model <模型名>   切换模型
   /ctx <整数>       设置 num_ctx（0 = 用 Ollama 服务端默认）。改值会触发模型重载
+  /repeat <p> [n]   repeat_penalty [repeat_last_n]；/repeat off = 恢复服务端默认
   /ws [目录]        查看 / 切换工作空间（相对路径读写的根）
   /reset            清空对话历史
-  /tools            列出已注册工具
+  /tools [指令]     工具启停。无参数=查看清单（✓/✗）；all|chat|none 切模式；
+                    on|off <工具名> 单个开关（自动进自定义模式）。chat=只对话
+                    （只留读文件/读图/联网四件，省上下文）
   /skill <名称> [问题]  加载技能进对话；带问题则加载后直接提问
   /<技能名> [问题]  快捷调用技能，等价 /skill <技能名>
   /save <文件>      保存对话历史为 JSON
@@ -222,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--ctx", type=int, default=DEFAULT_CTX,
                     help=f"num_ctx，默认 {DEFAULT_CTX}；0=用服务端默认（注意：改 ctx 会触发模型重载）")
     ap.add_argument("--temp", type=float, default=0.7, help="temperature，默认 0.7")
+    ap.add_argument("--repeat-penalty", type=float, default=None,
+                    help="options.repeat_penalty：抑制文字复读，建议从 1.1 试起；"
+                         "留空=不下发（用服务端默认）。仅 Ollama 原生协议生效")
+    ap.add_argument("--repeat-last-n", type=int, default=None,
+                    help="options.repeat_last_n：回看多长的窗口，默认 64；"
+                         "0=禁用、-1=num_ctx。留空=不下发。仅 Ollama 原生协议生效")
     ap.add_argument("--img", action="append", default=[],
                     help="给第一条消息附图片，可多次")
     ap.add_argument("-p", "--prompt", help="单次执行（非交互）")
@@ -230,6 +241,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-steps", type=int, default=MAX_TOOL_STEPS,
                     help=f"单回合最大工具步数，默认 {MAX_TOOL_STEPS}")
     ap.add_argument("--no-tools", action="store_true", help="禁用全部工具，纯聊天")
+    ap.add_argument("--tools", default=None, metavar="MODE|名称,...",
+                    help="工具启用策略：all=全部（默认）/ chat=只对话（读文件、读图、"
+                         "联网四件）/ none=全关 / 逗号分隔的工具名=自定义白名单。"
+                         "例：--tools chat；--tools read_file,web_search")
     ap.add_argument("--confirm", action="store_true", help="写/改/删文件、跑命令、联网前需要确认")
     ap.add_argument("--no-color", action="store_true", help="关闭彩色输出")
     ap.add_argument("--hide-think", action="store_true", help="开思考时也不打印思考过程")
@@ -269,10 +284,111 @@ def make_context(cfg: AgentConfig, workspace: Path, client=None) -> ToolContext:
                        notice=notice)
 
 
+def parse_tools_arg(raw: str | None) -> tuple[str, list[str]]:
+    """`--tools` 取值 → (模式, 白名单)。规则见 agent.toolpolicy.parse_spec。"""
+    return toolpolicy.parse_spec(raw)
+
+
+def _sync_ctx(ctx: ToolContext | None, cfg: AgentConfig) -> None:
+    """把新策略同步到执行上下文。
+
+    dispatch 是按 ctx.tools_allowed 拦截的（防模型硬调已关掉的工具）。
+    这里不刷新的话，/tools off skill 之后同一会话里还能直接 /skill 加载成功 —— 
+    状态两处不一致，用户会觉得开关没生效。
+    """
+    if ctx is not None:
+        ctx.tools_allowed = toolpolicy.allowed_names(cfg)
+
+
+def refresh_system_prompt(history: list, workspace: Path, cfg: AgentConfig) -> None:
+    """只替换 system 消息（技能索引在里面），对话内容原样保留。
+
+    策略改了却整条重建历史 = 把用户聊了半天的话清空，代价太大；
+    但什么都不做的话，技能索引会一直停在旧状态。
+    """
+    fresh = new_history(str(workspace), cfg)[0]
+    if history and history[0].get("role") == "system":
+        history[0] = fresh
+    else:
+        history.insert(0, fresh)
+
+
+def tools_command(arg: str, cfg: AgentConfig, history: list, workspace: Path,
+                  use_color: bool, ctx: ToolContext | None = None) -> None:
+    """/tools —— 查看工具启用状态，或切换模式 / 单个工具。
+
+    语法：
+      /tools                    列出全部工具（✓ 启用 / ✗ 关闭）
+      /tools all|chat|none      整体切模式
+      /tools on  <名字>         打开一个（自动切到自定义模式）
+      /tools off <名字>         关掉一个（自动切到自定义模式）
+    """
+    parts = (arg or "").split()
+    import tools as tools_pkg
+    names = {t.name for t in tools_pkg.all_tools()}
+
+    if not parts:
+        print(color(f"工具策略：{toolpolicy.describe(cfg)}"
+                    f"（{toolpolicy.enabled_count(cfg)}/{len(names)} 启用）",
+                    "bold", use_color), flush=True)
+        for g in toolpolicy.groups(cfg):
+            print(color(f"  [{g['label']}]", "dim", use_color), flush=True)
+            for t in g["tools"]:
+                mark = "✓" if t["enabled"] else "✗"
+                print(f"    {mark} {t['name']:<14}", flush=True)
+        print(color("  /tools chat   只对话（读文件/读图/联网四件）\n"
+                    "  /tools all    全部启用\n"
+                    "  /tools none   全关，纯聊天\n"
+                    "  /tools off read_long_doc（同理 on）", "dim", use_color),
+              flush=True)
+        return
+
+    head = parts[0].lower()
+    if head in MODES and len(parts) == 1:
+        cfg.tool_mode = head
+        cfg.no_tools = head == "none"     # 老开关同步，免得两处状态打架
+        _sync_ctx(ctx, cfg)
+        refresh_system_prompt(history, workspace, cfg)
+        print(f"工具策略 = {toolpolicy.describe(cfg)}"
+              f"（{toolpolicy.enabled_count(cfg)}/{len(names)} 启用，下一条消息生效）",
+              flush=True)
+        return
+
+    if head in ("on", "off") and len(parts) >= 2:
+        name = parts[1].strip()
+        if name not in names:
+            near = [n for n in names if name.lower() in n.lower()]
+            hint = f"（是不是想写 {', '.join(near)}？）" if near else ""
+            print(f"[错误] 没有这个工具: {name}{hint}", flush=True)
+            print("       用 /tools 看全部工具名", flush=True)
+            return
+        # 基线用「当前生效的集合」，不是白名单本身：
+        # 在「全部」模式下 off 一个，应该得到「19 减 1」，而不是「一个都不剩」
+        # （白名单此时是空的，直接拿它当基线会把别的工具一起关掉）。
+        base = toolpolicy.allowed_names(cfg)
+        cur = set(base) if base is not None else set(names)
+        if head == "on":
+            cur.add(name)
+        else:
+            cur.discard(name)
+        cfg.tool_mode = MODE_CUSTOM
+        cfg.no_tools = False
+        cfg.tools_enabled = sorted(cur)
+        _sync_ctx(ctx, cfg)
+        refresh_system_prompt(history, workspace, cfg)
+        state = "启用" if head == "on" else "关闭"
+        print(f"已{state} {name}；当前 {toolpolicy.describe(cfg)}"
+              f"（{toolpolicy.enabled_count(cfg)}/{len(names)} 启用）", flush=True)
+        return
+
+    print("用法: /tools | /tools all|chat|none | /tools on|off <工具名>", flush=True)
+
+
 def main(argv: list[str] | None = None):
     setup_stdio()
     args = build_parser().parse_args(argv)
     use_color = not args.no_color and sys.stdout.isatty()
+    tool_mode, tool_names = parse_tools_arg(args.tools)
 
     cfg = AgentConfig(
         host=args.host,
@@ -282,14 +398,20 @@ def main(argv: list[str] | None = None):
         think=args.think,
         num_ctx=(args.ctx if args.ctx > 0 else None),
         temperature=args.temp,
+        repeat_penalty=args.repeat_penalty,
+        repeat_last_n=args.repeat_last_n,
         max_steps=args.max_steps,
         confirm=args.confirm,
         use_color=use_color,
         show_think=not args.hide_think,
-        no_tools=args.no_tools,
+        no_tools=args.no_tools and args.tools is None,
+        tool_mode=tool_mode,
+        tools_enabled=tool_names,
         warm=not args.no_warm,
         workspace=str(Path(args.workspace).expanduser().resolve()) if args.workspace else "",
     )
+    # 显式 --model 高于「上次选的模型」（Web UI 启动路径也要这个信息）
+    cfg._model_explicit = args.model != DEFAULT_MODEL
     workspace = Path(cfg.workspace) if cfg.workspace else Path.cwd()
     if not workspace.is_dir():
         print(color(f"[错误] 工作空间不是目录: {workspace}", "red", use_color), flush=True)
@@ -306,10 +428,12 @@ def main(argv: list[str] | None = None):
 
     client = create_client(cfg)
     ctx = make_context(cfg, workspace, client)
-    history = new_history(str(workspace))
+    history = new_history(str(workspace), cfg)
 
     print(color(f"{client.name} | 模型 {cfg.model} | think={cfg.think} "
-                f"| ctx={cfg.num_ctx or '服务端默认'}", "bold", use_color), flush=True)
+                f"| ctx={cfg.num_ctx or '服务端默认'}"
+                f" | repeat_penalty={cfg.repeat_penalty if cfg.repeat_penalty is not None else '服务端默认'}",
+                "bold", use_color), flush=True)
     print(color(f"工作空间: {workspace}", "dim", use_color), flush=True)
 
     try:
@@ -349,7 +473,9 @@ def main(argv: list[str] | None = None):
             print(color(f"[警告] 预热失败: {e}", "yellow", use_color), flush=True)
 
     import tools as tools_pkg
-    print(color(f"已注册工具 {len(tools_pkg.all_specs())} 个，/tools 查看。"
+    _on = toolpolicy.enabled_count(cfg)
+    print(color(f"工具 {_on}/{len(tools_pkg.all_tools())} 个启用"
+                f"（{toolpolicy.describe(cfg)}），/tools 查看或切换。"
                 f"输入 /help 看命令。", "dim", use_color), flush=True)
 
     pending_images: list[str] = []   # base64，随下一条消息附上
@@ -568,6 +694,29 @@ def main(argv: list[str] | None = None):
                           flush=True)
                 except ValueError:
                     print("用法: /ctx 65536（0=服务端默认）", flush=True)
+            elif cmd == "/repeat":
+                from agent.config import parse_repeat_last_n, parse_repeat_penalty
+                parts = arg.split()
+                if not parts or parts[0].lower() in ("off", "default"):
+                    cfg.repeat_penalty = None
+                    cfg.repeat_last_n = None
+                    client.repeat_penalty = None
+                    client.repeat_last_n = None
+                    print("repeat_penalty / repeat_last_n = 服务端默认（不下发）", flush=True)
+                else:
+                    p = parse_repeat_penalty(parts[0])
+                    n = parse_repeat_last_n(parts[1]) if len(parts) > 1 else cfg.repeat_last_n
+                    if p is None or (len(parts) > 1 and n is None):
+                        print("用法: /repeat 1.1 [256]；/repeat off = 恢复服务端默认。"
+                              "repeat_last_n 可填 0（禁用）或 -1（整个上下文）", flush=True)
+                    else:
+                        cfg.repeat_penalty = p
+                        cfg.repeat_last_n = n
+                        client.repeat_penalty = p
+                        client.repeat_last_n = n
+                        print(f"repeat_penalty = {p}，repeat_last_n = "
+                              f"{n if n is not None else '服务端默认'}（下次请求生效，不会触发模型重载）",
+                              flush=True)
             elif cmd == "/ws":
                 if not arg:
                     print(f"工作空间: {ctx.workspace}", flush=True)
@@ -577,14 +726,13 @@ def main(argv: list[str] | None = None):
                         print(f"[错误] 不是目录: {p}", flush=True)
                     else:
                         ctx.workspace = p
-                        history = new_history(str(p))
+                        history = new_history(str(p), cfg)
                         print(f"工作空间 = {p}（历史已重置）", flush=True)
             elif cmd == "/reset":
-                history = new_history(str(workspace))
+                history = new_history(str(workspace), cfg)
                 print("历史已清空", flush=True)
             elif cmd == "/tools":
-                for t in tools_pkg.all_tools():
-                    print(f"  {t.name:<12} {t.description}", flush=True)
+                tools_command(arg, cfg, history, workspace, use_color, ctx)
             elif cmd == "/skill":
                 name, _, question = arg.partition(" ")
                 forward = do_skill(name.strip(), question.strip())

@@ -10,7 +10,8 @@ import time
 
 from agent.backends import ChatClient
 from agent import longdoc
-from agent.config import SYSTEM_PROMPT, AgentConfig
+from agent.config import (SYSTEM_PROMPT_CORE, SYSTEM_PROMPT_FILE_RULE,
+                         AgentConfig)
 from agent import context_view
 from agent import compaction
 from agent.events import ConsoleEmitter
@@ -18,7 +19,7 @@ from agent.registry import ToolContext, ToolResult
 from agent.repeat_guard import RepeatGuard
 from agent.retry import (LIMITED, RATE_LIMIT, RETRYABLE, backoff_delay,
                          classify_error, interruptible_sleep)
-from agent import timectx, usage
+from agent import timectx, usage, toolpolicy
 
 import tools
 
@@ -164,15 +165,47 @@ def pad_unanswered_tool_calls(history: list) -> int:
     return len(missing)
 
 
-def new_history(workspace: str | None = None) -> list:
-    prompt = SYSTEM_PROMPT
+def _policy_hint(cfg) -> str:
+    """把「这次有哪些工具」写进系统提示词。
+
+    基础 SYSTEM_PROMPT 写的是「需要读文件/联网时必须调用工具」，工具被关掉后
+    这句话就成了误导：纯聊天模式下模型会声称「我去读一下」然后编一个工具结果，
+    或者反复调一个不存在的工具把步数耗光。所以这里按实际下发的集合改口径。
+    """
+    if cfg is None:
+        return ""
+    names = toolpolicy.allowed_names(cfg)
+    if names is None:
+        return ""
+    if not names:
+        return ("\n本次对话没有启用任何工具：不要声称调用工具、不要编造文件内容或"
+                "网页结果。需要工具才能完成的事，直接说明当前模式不提供工具。")
+    return ("\n本次对话只启用了这些工具：" + "、".join(sorted(names)) +
+            "。其他工具不可用，不要调用它们，也不要假装调用过。")
+
+
+def new_history(workspace: str | None = None, cfg=None) -> list:
+    """新建对话历史（system 消息 + 技能索引 + 工具口径）。
+
+    cfg 决定三件事：
+      - cfg=None（老调用方/测试）：照旧注入全部技能，行为不变
+      - skill 工具被策略关掉：索引一并省略 —— 名字+描述常驻是 token 开销，
+        而模型已经没有任何办法加载正文，留着只会让它编造技能内容
+      - skills_disabled 里的技能：从索引里剔除
+    """
+    prompt = SYSTEM_PROMPT_CORE
+    # 「生成文件必须用 write_file」这条只在真有 write_file 时才成立
+    if toolpolicy.is_allowed(cfg, "write_file"):
+        prompt += SYSTEM_PROMPT_FILE_RULE
     if workspace:
         prompt += f"\n当前工作空间目录: {workspace}"
+    prompt += _policy_hint(cfg)
     try:  # 技能索引（名称+短描述）常驻；正文由 skill 工具按需加载
         from tools.skill import skill_index
-        idx = skill_index(workspace)
-        if idx:
-            prompt += "\n" + idx
+        if toolpolicy.skill_tool_on(cfg):
+            idx = skill_index(workspace, toolpolicy.disabled_skills(cfg))
+            if idx:
+                prompt += "\n" + idx
     except Exception:
         pass
     return [{"role": "system", "content": prompt}]
@@ -203,6 +236,10 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
     ctx.cfg = cfg
     ctx.client = client
     ctx.notice = getattr(emitter, "notice", None)
+    # 本回合允许的工具：与下面下发的 schema 同源。schema 决定「模型看得见什么」，
+    # 这个集合决定「真调了会不会被执行」—— 小模型会照旧对话里的工具名硬调，
+    # 只靠不下发 schema 挡不住。
+    ctx.tools_allowed = toolpolicy.allowed_names(cfg)
     if cancel is not None:
         ctx.cancel = cancel
 
@@ -221,14 +258,15 @@ def run_turn(client: ChatClient, cfg: AgentConfig, ctx: ToolContext,
     history.append(user_msg)
     turn_start_ts = time.time()     # 时间读数的第 1 步基准（用户消息时刻）
 
-    tools_spec = None if cfg.no_tools else tools.all_specs()
+    tools_spec = toolpolicy.specs_for(cfg)
     # 长会话压缩（DSH agent/pre-step 的等价点）：每步请求前做压力检查。
     # 默认本地确定性摘要零额外请求；llm 模式另发一次摘要请求，失败自动降级。
     summarize_fn = (compaction.make_llm_summarizer(client, cfg, cancel=cancel)
                     if getattr(cfg, "compaction_summarizer", "local") == "llm"
                     else None)
     compacted_this_turn = 0
-    want_expert = _expert_available() and expert_requested(user_text)  # 用户点名要用外脑
+    want_expert = (_expert_available() and expert_requested(user_text)
+                   and toolpolicy.is_allowed(cfg, "web_chat"))  # 用户点名要用外脑
     expert_done = False                         # 本回合是否已经问过外脑
     final_text = ""
     resp: dict = {}

@@ -4,6 +4,11 @@
   think 参数        https://ollama.com/blog/thinking
   tools / 图片格式  https://github.com/ollama/ollama/blob/main/docs/api.md
   卸载模型          https://github.com/ollama/ollama/blob/main/docs/api.md#unload-a-model
+  options 参数集    https://docs.ollama.com/modelfile#valid-parameters-and-values
+                    /api/chat 的 options 说明即指向这张表：
+                    "additional model parameters listed in the documentation
+                     for the Modelfile ... such as temperature"，
+                    请求级 options 覆盖 Modelfile 里的 PARAMETER 默认值。
 """
 from __future__ import annotations
 
@@ -57,17 +62,23 @@ class OllamaClient(ChatClient):
 
     supports_num_ctx = True       # options.num_ctx
     supports_think = True         # think 字段
+    supports_repeat_penalty = True  # options.repeat_penalty / repeat_last_n
     supports_keep_alive = True    # keep_alive
     supports_unload = True        # /api/generate + keep_alive=0
 
     # 类属性兜底：测试会用 __new__ 绕过 __init__ 造实例，
     # 实例属性缺失时这里还能给出默认值，不至于 AttributeError
     _no_think = False
+    repeat_penalty = None
+    repeat_last_n = None
 
     def __init__(self, config):
         super().__init__(config)
         self.think = config.think_value   # False/True/"low".../None(不传)
         self.num_ctx = config.num_ctx
+        # getattr 而非属性直取：伪造 config 的老测试不必跟着补字段
+        self.repeat_penalty = getattr(config, "repeat_penalty", None)
+        self.repeat_last_n = getattr(config, "repeat_last_n", None)
         self._no_think = False            # 模型拒收 think 后置位，后续不再下发
 
     # ---------- 协议细节 ----------
@@ -92,6 +103,12 @@ class OllamaClient(ChatClient):
         options: dict = {"temperature": self.temperature}
         if self.num_ctx is not None:
             options["num_ctx"] = self.num_ctx
+        # None = 不下发。请求级 options 会覆盖 Modelfile 的 PARAMETER 默认值，
+        # 所以没设过时绝不写 0/1.0 这种「看起来像默认值」的占位值进去。
+        if self.repeat_penalty is not None:
+            options["repeat_penalty"] = self.repeat_penalty
+        if self.repeat_last_n is not None:
+            options["repeat_last_n"] = self.repeat_last_n
         payload: dict = {
             "model": self.model,
             "messages": messages,

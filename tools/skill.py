@@ -67,8 +67,13 @@ def _skill_dirs(workspace: Path | None) -> list[Path]:
     return [d for d in dirs if d.is_dir()]
 
 
-def _discover(workspace: Path | None) -> dict[str, dict]:
-    """扫描全部技能目录 → {name: {path, desc, display}}，同名先者胜（工作空间优先）。"""
+def _discover(workspace: Path | None, disabled=()) -> dict[str, dict]:
+    """扫描全部技能目录 → {name: {path, desc, display}}，同名先者胜（工作空间优先）。
+
+    disabled 里的技能直接不出现（用户在「设置 → 工具与技能」里关掉的）：
+    从发现阶段就剔掉，索引、清单、加载三条路径自动一致，不用各处再判一遍。
+    """
+    skip = set(disabled or ())
     out: dict[str, dict] = {}
     for d in _skill_dirs(workspace):
         try:
@@ -84,7 +89,7 @@ def _discover(workspace: Path | None) -> dict[str, dict]:
             except OSError:
                 continue
             name = meta.get("name") or sub.name
-            if name in out:
+            if name in out or name in skip:
                 continue
             out[name] = {
                 "path": md,
@@ -94,17 +99,22 @@ def _discover(workspace: Path | None) -> dict[str, dict]:
     return out
 
 
-def list_skills(workspace: str | None = None) -> list[dict]:
-    """技能清单（给 Web UI / API）：[{name, display, desc}]。"""
+def list_skills(workspace: str | None = None, disabled=()) -> list[dict]:
+    """技能清单（给 Web UI / API）：[{name, display, desc}]。
+
+    disabled 默认空 → 清单包含全部（界面要能看见、能重新打开）；
+    要「当前可见的」就传进去，与索引一致。
+    """
     return [
         {"name": n, "display": it["display"], "desc": it["desc"]}
-        for n, it in sorted(_discover(Path(workspace) if workspace else None).items())
+        for n, it in sorted(_discover(Path(workspace) if workspace else None,
+                                      disabled).items())
     ]
 
 
-def skill_index(workspace: str | None) -> str:
+def skill_index(workspace: str | None, disabled=()) -> str:
     """给系统提示词的技能索引（名称+短描述）；无技能返回空串。"""
-    items = _discover(Path(workspace) if workspace else None)
+    items = _discover(Path(workspace) if workspace else None, disabled)
     if not items:
         return ""
     lines = ["可用技能（任务命中技能主题时，先调用 skill(name=\"...\") 加载指令全文再执行）："]
@@ -135,17 +145,26 @@ def skill_index(workspace: str | None) -> str:
     },
 )
 def skill(ctx: ToolContext, name: str = "", max_chars: int = 20000) -> ToolResult:
-    items = _discover(ctx.workspace)
+    """加载技能全文。被用户关掉的技能不出现，显式点名时给出明确原因。"""
+    from agent import toolpolicy
+
+    disabled = toolpolicy.disabled_skills(getattr(ctx, "cfg", None))
+    items = _discover(ctx.workspace, disabled)
     if not items:
+        hint = ("；当前所有技能都被关掉了（设置 → 工具与技能 可重新打开）"
+                if disabled else "")
         return ToolResult(
             "[提示] 未发现任何技能。技能目录："
-            f"{ctx.workspace / '.workbuddy' / 'skills'}（工作空间级）、~/.workbuddy/skills（用户级）")
+            f"{ctx.workspace / '.workbuddy' / 'skills'}（工作空间级）、~/.workbuddy/skills（用户级）"
+            + hint)
 
     if not (name or "").strip():
         lines = [f"共 {len(items)} 个技能（skill(name=\"...\") 加载全文）："]
         for n, it in sorted(items.items()):
             d = re.sub(r"\s+", " ", it["desc"])
             lines.append(f"- {n}（{it['display']}）: {d[:80]}{'…' if len(d) > 80 else ''}")
+        if disabled:
+            lines.append(f"（另有 {len(disabled)} 个技能被关闭，未列出）")
         return ToolResult("\n".join(lines))
 
     key = name.strip()
@@ -156,6 +175,13 @@ def skill(ctx: ToolContext, name: str = "", max_chars: int = 20000) -> ToolResul
             it = items[cand[0]]
             key = cand[0]
         else:
+            # 点名的正好是被关掉的那个：说清是「关了」而不是「不存在」，
+            # 否则用户会以为技能丢了，去翻目录也找不到问题。
+            hit = [n for n in disabled if key.lower() in n.lower()]
+            if hit:
+                return ToolResult(
+                    f"[已禁用] 技能 {hit[0]} 已被关闭。要使用请在「设置 → 工具与技能」"
+                    "里重新勾选，或用 /tools on skill 类的入口打开。")
             return ToolResult(f"[错误] 未找到技能 {name!r}。可用: {', '.join(sorted(items))}")
 
     try:

@@ -127,10 +127,16 @@ def _done() -> bytes:
 
 
 def test_heartbeat_fires_while_stream_is_silent() -> None:
-    """静默 2.5 秒的流：心跳必须报过，且秒数递增。"""
+    """静默 3.2 秒的流：心跳必须报过，且秒数递增。
+
+    为什么是 3.2 秒而不是 2.5：tick 是 1.0s，2.5s 静默只留两次机会，而
+    `Event.wait(1.0)` 早返回 1ms 就会命中 `idle < 1.0` 被跳过 —— 剩一次机会时
+    机器稍有负载就掉到 1 次心跳，测试在「满负载跑全套」时偶发失败（实测 5 轮里
+    挂 2 轮，单独跑 2 轮全过）。给三个 tick 的余量，断言的严格程度不变。
+    """
     stream = _patched(_SlowStream([_tool_block("write_file",
                                                {"path": "a.py", "content": "x" * 50}),
-                                   _done()], silent=2.5))
+                                   _done()], silent=3.2))
     seen: list[tuple[float, int]] = []
     try:
         r = _client().chat([{"role": "user", "content": "x"}],
@@ -139,7 +145,7 @@ def test_heartbeat_fires_while_stream_is_silent() -> None:
         B.http.client.HTTPConnection = REAL_CONN
 
     assert r["tool_calls"], "整块 tool_calls 应该照常解析出来"
-    assert len(seen) >= 2, f"2.5 秒静默至少应报 2 次心跳，实际 {seen}"
+    assert len(seen) >= 2, f"3.2 秒静默至少应报 2 次心跳，实际 {seen}"
     assert seen[0][0] < seen[-1][0], f"已等秒数应递增，实际 {seen}"
     assert all(ch == 0 for _, ch in seen), "还没收到任何内容时字符数应为 0"
     print(f"PASS: 静默期心跳 {len(seen)} 次，最后一次 {seen[-1][0]:.1f}s")

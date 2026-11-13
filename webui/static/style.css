@@ -823,6 +823,84 @@ details.think .body { font-family: inherit; font-size: 13px; }
 .composer-tools { display: flex; align-items: center; gap: 2px; }
 .hint-inline { font-size: 11.5px; color: var(--muted); margin-left: 6px; }
 
+/* ============ 输入框下方快捷入口（模型 / 权限 / 工作空间） ============
+   切换类操作就地完成，不进设置抽屉；只有新增自定义模型才用完整表单。 */
+.composer-quick {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid var(--border);
+}
+.quick-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 280px; height: 27px; padding: 0 9px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--panel); color: var(--text-2);
+  font: inherit; font-size: 12px; cursor: pointer;
+  transition: border-color var(--dur), color var(--dur);
+}
+.quick-chip:hover, .quick-chip.on { border-color: var(--accent); color: var(--accent); }
+.quick-chip .qc-ico, .quick-chip .qc-caret { display: inline-flex; flex: 0 0 auto; }
+.quick-chip .qc-caret { opacity: .6; }
+.quick-chip .qc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-chip.ghost { border-color: transparent; color: var(--muted); }
+.qc-spacer { flex: 1; }
+
+/* 浮层锚在 .composer-shell（position:relative）上方，避免被消息区裁掉 */
+.quick-pop {
+  position: absolute; bottom: calc(100% + 10px); left: 0;
+  width: min(720px, 100%); max-height: min(470px, 62vh);
+  display: flex; flex-direction: column; overflow: hidden; z-index: 40;
+  border: 1px solid var(--border-strong); border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 12px 36px rgba(20, 30, 50, .18), 0 2px 8px rgba(20, 30, 50, .08);
+}
+.quick-pop.hidden { display: none; }
+.qp-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  font-size: 13px; font-weight: 600;
+}
+.qp-head .qp-close { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; }
+.qp-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); min-height: 0; }
+.qp-list { border-right: 1px solid var(--border); padding: 10px 10px 12px 14px; overflow-y: auto; max-height: 370px; }
+.qp-detail { padding: 12px 14px; overflow-y: auto; max-height: 370px; }
+.qp-body { padding: 12px 14px 14px; overflow-y: auto; }
+.qp-sec { font-size: 11px; color: var(--muted); margin: 12px 0 5px; letter-spacing: .04em; }
+.qp-sec:first-child { margin-top: 0; }
+.qp-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; margin-bottom: 3px;
+  border: 1px solid transparent; border-radius: 9px;
+  background: none; color: var(--text); font: inherit; font-size: 12.5px;
+  text-align: left; cursor: pointer;
+}
+.qp-row:hover { background: var(--accent-soft); }
+.qp-row.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.qp-row .qp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qp-row .qp-sub { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+.qp-row .qp-check { color: var(--accent); font-weight: 700; }
+.qp-row.action { color: var(--accent); }
+.qp-title { font-size: 13px; font-weight: 600; margin-bottom: 2px; word-break: break-all; }
+.qp-field { display: block; margin: 12px 0 0; font-size: 12px; color: var(--text-2); }
+.qp-field select, .qp-field input {
+  display: block; width: 100%; margin-top: 5px; padding: 7px 9px;
+  border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px;
+}
+.qp-field.field-off { opacity: .55; }
+.qp-note { font-size: 11.5px; color: var(--muted); line-height: 1.6; margin: 10px 0 0; }
+.qp-btn {
+  margin-top: 12px; padding: 7px 12px; border: none; border-radius: 9px;
+  background: var(--accent); color: #fff; font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.qp-btn.ghost { background: none; color: var(--accent); border: 1px solid var(--border); }
+.qp-switch {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 12px; padding: 12px 0 2px; border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.qp-switch input { width: 34px; height: 19px; accent-color: var(--accent); cursor: pointer; }
+
 .send-btn {
   display: inline-flex; align-items: center; gap: 6px;
   height: 36px; padding: 0 16px;
@@ -1261,3 +1339,32 @@ details.think .body { font-family: inherit; font-size: 13px; }
 .ss-run { color: var(--accent, #4a9eff); animation: ss-pulse 1.2s ease-in-out infinite; }
 .ss-done { color: #2fa25c; }
 @keyframes ss-pulse { 50% { opacity: .35; } }
+
+/* ---- 工具 / 技能启停清单（设置 → 偏好 + 输入框下方快捷浮层）---- */
+.tool-list {
+  display: flex; flex-direction: column; gap: 2px;
+  margin-top: 8px; max-height: 260px; overflow-y: auto;
+}
+.tool-group { font-size: 11px; color: var(--muted); letter-spacing: .04em; margin: 8px 0 2px; }
+.tool-group:first-child { margin-top: 0; }
+.tool-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 8px; cursor: pointer;
+  font-size: 12.5px; color: var(--text);
+}
+.tool-item:hover { background: var(--accent-soft); }
+.tool-item input { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; flex: 0 0 auto; }
+.tool-item .t-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-item .t-tag { font-size: 10.5px; color: var(--muted); flex: 0 0 auto; }
+.tool-item.off { opacity: .6; }
+.tool-list.disabled { opacity: .5; pointer-events: none; }
+.tool-sec-title { margin-top: 14px; }
+
+/* 浮层里的工具清单交给 .qp-detail 统一滚动：嵌套两层滚动条很难用，
+   底部的「更多设置」按钮也会被挤到看不见 */
+.qp-detail .tool-list { max-height: none; overflow: visible; }
+
+/* 设置抽屉本身就是滚动容器：清单不再自滚一层，
+   否则「滚到一半以为到底了」——抽屉和清单各有各的滚动条最难用 */
+#tab-prefs .tool-list { max-height: none; overflow: visible; }
+#tab-prefs .tool-list.disabled { opacity: .5; pointer-events: none; }

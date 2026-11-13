@@ -19,7 +19,9 @@
       "model": "qwen3.5:9b",
       "think": "off",
       "num_ctx": 65536,
-      "temperature": 0.7
+      "temperature": 0.7,
+      "repeat_penalty": null,
+      "repeat_last_n": null
     }
   ],
   "ui": { "confirm": true, "max_steps": 12, "workspace": "" }
@@ -44,6 +46,7 @@ import uuid
 from pathlib import Path
 
 from agent import HIDDEN_DIRNAME
+from agent.toolpolicy import normalize_mode, split_names
 
 ENV_CONFIG = "OLLAMA_AGENT_CONFIG"
 DEFAULT_PATH = Path.home() / HIDDEN_DIRNAME / "config.json"
@@ -51,7 +54,8 @@ VERSION = 1
 
 # 一个 profile 里跟「连哪个模型」有关的字段。顺序即前端表单顺序。
 PROFILE_FIELDS = ("name", "provider", "host", "api_key", "model",
-                  "think", "num_ctx", "temperature")
+                  "think", "num_ctx", "temperature",
+                  "repeat_penalty", "repeat_last_n")
 
 DEFAULT_PROFILE = {
     "name": "本地 Ollama",
@@ -62,6 +66,9 @@ DEFAULT_PROFILE = {
     "think": "off",
     "num_ctx": 65536,
     "temperature": 0.7,
+    # None = 不下发，用 Ollama 服务端默认（与 AgentConfig 同义）
+    "repeat_penalty": None,
+    "repeat_last_n": None,
 }
 
 BUILTIN_ID = "ollama-local"     # 内置条目：从 Ollama /api/tags 实时读，不存在文件里
@@ -117,7 +124,13 @@ class ConfigStore:
             "version": VERSION,
             "active": BUILTIN_ID,
             "profiles": [],          # 内置 Ollama 不落盘，见 BUILTIN_ID
-            "ui": {"confirm": True, "max_steps": 12, "workspace": ""},
+            # 内置 Ollama 下「上次选了哪个模型」。内置条目本身不写成 profile，
+            # 但模型名得单独记一笔，否则重启永远回到写死的 DEFAULT_MODEL。
+            "builtin_model": "",
+            "ui": {"confirm": True, "max_steps": 12, "workspace": "",
+                   # 工具/技能策略存在 ui 段：它属于「我用这套工具的习惯」，
+                   # 换模型不该把它一起重置（同 confirm / workspace）
+                   "tool_mode": "all", "tools_enabled": [], "skills_disabled": []},
         }
         if _recovered:
             out["_recovered"] = _recovered
@@ -170,10 +183,16 @@ class ConfigStore:
             "version": VERSION,
             "active": active,
             "profiles": profiles,
+            # 旧配置文件里没有这个字段 → 空串（沿用启动默认模型），不凭空造模型名
+            "builtin_model": str(data.get("builtin_model") or "").strip(),
             "ui": {
                 "confirm": bool(ui.get("confirm", True)),
                 "max_steps": int(ui.get("max_steps") or 12),
                 "workspace": str(ui.get("workspace") or ""),
+                # 旧配置文件没有这三项 → 默认「全部启用」，行为与旧版一致
+                "tool_mode": normalize_mode(ui.get("tool_mode")),
+                "tools_enabled": split_names(ui.get("tools_enabled")),
+                "skills_disabled": split_names(ui.get("skills_disabled")),
             },
         }
 
@@ -264,7 +283,15 @@ def to_agent_patch(profile: dict, ui: dict) -> dict:
         "think": profile.get("think") or "off",
         "num_ctx": profile.get("num_ctx", 65536),
         "temperature": profile.get("temperature", 0.7),
+        # 缺失或 None 都表示「不下发，用服务端默认」；切模型时不会把值误设成 0
+        "repeat_penalty": profile.get("repeat_penalty"),
+        "repeat_last_n": profile.get("repeat_last_n"),
         "confirm": (ui or {}).get("confirm", True),
         "max_steps": (ui or {}).get("max_steps", 12),
         "workspace": (ui or {}).get("workspace", ""),
+        # 切模型时把工具策略一并带上：它存在 ui 段，但 update_config 是按
+        # 「一份补丁改一遍」工作的，漏传就会回到默认「全部启用」
+        "tool_mode": (ui or {}).get("tool_mode", "all"),
+        "tools_enabled": split_names((ui or {}).get("tools_enabled")),
+        "skills_disabled": split_names((ui or {}).get("skills_disabled")),
     }

@@ -36,6 +36,10 @@ class ToolContext:
     use_color: bool = True
     ask: Callable[[str], bool] | None = None
     workspace: Path = field(default_factory=Path.cwd)
+    # 本次回合允许的工具名；None = 不限制。由 run_turn 按 toolpolicy 注入，
+    # 用来拦住「模型幻觉出一个已被关掉的工具」——只靠不传 schema 挡不住
+    # 小模型照着旧对话里的工具名硬调。
+    tools_allowed: set[str] | None = None
     cfg: Any = None                          # AgentConfig（读 num_ctx 等）
     client: Any = None                       # 聊天客户端（子请求用）
     notice: Callable[[str], None] | None = None   # 进度提示 → 前端
@@ -128,12 +132,20 @@ def tool(name: str, description: str, parameters: dict, confirm: bool = False):
     return deco
 
 
-def all_tools() -> list[Tool]:
-    return list(_REGISTRY.values())
+def all_tools(names: "set[str] | list[str] | tuple[str, ...] | None" = None) -> list[Tool]:
+    """全部工具；给 names 时只回这些（None = 不做限制）。
+
+    用白名单而不是黑名单：黑名单一旦漏掉新加的工具，它会自动被启用；
+    白名单漏掉只会少一个工具，用户能立刻发现并补上。
+    """
+    if names is None:
+        return list(_REGISTRY.values())
+    allow = set(names)
+    return [t for t in _REGISTRY.values() if t.name in allow]
 
 
-def all_specs() -> list[dict]:
-    return [t.spec() for t in _REGISTRY.values()]
+def all_specs(names=None) -> list[dict]:
+    return [t.spec() for t in all_tools(names)]
 
 
 def get(name: str) -> Tool | None:
@@ -144,6 +156,13 @@ def dispatch(name: str, args: dict, ctx: ToolContext) -> ToolResult:
     t = _REGISTRY.get(name)
     if t is None:
         return ToolResult(f"[错误] 未知工具: {name}")
+    # 已注册但本回合被策略关掉：明确告诉模型「这个工具现在不可用」，
+    # 而不是让它以为工具坏了、换个参数反复重试（那会把步数耗光）。
+    allowed = getattr(ctx, "tools_allowed", None)
+    if allowed is not None and name not in allowed:
+        return ToolResult(
+            f"[已禁用] 工具 {name} 在当前模式下未启用（可在「设置 → 工具与技能」"
+            "或 /tools 里打开）。请用已启用的工具完成任务，或直接回答用户。")
     r = t.run(ctx, args or {})
     r.text = spill.maybe_spill(name, r.text, ctx)   # 超大输出落盘（CLI/WebUI 统一走这）
     return r
