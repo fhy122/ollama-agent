@@ -201,6 +201,11 @@ class ConfigStore:
                 ui_out["num_ctx"] = max(0, int(ui["num_ctx"]))
             except (TypeError, ValueError):
                 pass      # 手改坏的配置当没存过，别让一个笔误卡住启动
+        # 重复惩罚同理：键不存在 = 从没调过（保留启动参数），
+        # 显式 null = 用户明确选「不下发」。校验交给 parse_*，这里只保留原值形态。
+        for k in ("repeat_penalty", "repeat_last_n"):
+            if k in ui and ui[k] is not None:
+                ui_out[k] = ui[k]
         return {
             "version": VERSION,
             "active": active,

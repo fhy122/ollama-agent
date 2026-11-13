@@ -167,3 +167,62 @@ def test_old_profile_without_new_fields_gets_none(tmp_path):
         {"id": "p-old", "name": "旧", "provider": "ollama", "model": "m"}]})
     got = uc.ConfigStore(st.path).get_profile(uc.ConfigStore(st.path).load(), "p-old")
     assert got["repeat_penalty"] is None and got["repeat_last_n"] is None, got
+
+
+# ---------- 7：内置 Ollama 下也要记住（曾经的缺口） ----------
+# 内置条目没有 profile 可存，以前只往 profile 回写，所以用内置 Ollama 时
+# 在偏好里设完惩罚值、一重启就回到「不下发」，用户会以为设置是坏的。
+
+def _session(tmp_path):
+    """只驱动配置读写逻辑的 session（同 test_builtin_model.py）。"""
+    s = AgentSession.__new__(AgentSession)
+    s.config_store = uc.ConfigStore(tmp_path / "config.json")
+    s.user_cfg = s.config_store.load()
+    s.cfg = _cfg(provider="ollama")
+    s.workspace = tmp_path
+    s.confirm = True
+    return s
+
+
+def test_builtin_persists_and_restores(tmp_path):
+    s = _session(tmp_path)
+    s.cfg.repeat_penalty = 1.08
+    s.cfg.repeat_last_n = 256
+    s._sync_user_cfg()
+    ui = uc.ConfigStore(s.config_store.path).load()["ui"]
+    assert ui["repeat_penalty"] == 1.08 and ui["repeat_last_n"] == 256, ui
+
+    s2 = _session(tmp_path)
+    assert s2.cfg.repeat_penalty is None, "构造时应是启动默认（不下发）"
+    s2._restore_profile()
+    assert s2.cfg.repeat_penalty == 1.08, "重启后应回到上次设的值"
+    assert s2.cfg.repeat_last_n == 256
+
+
+def test_builtin_explicit_cli_flag_wins(tmp_path):
+    """命令行显式给了 --repeat-penalty，就别被配置文件里的旧值顶掉。"""
+    s = _session(tmp_path)
+    s.cfg.repeat_penalty = 1.08
+    s.cfg.repeat_last_n = 256
+    s._sync_user_cfg()
+
+    s2 = _session(tmp_path)
+    s2.cfg.repeat_penalty = 1.15
+    s2.cfg.repeat_last_n = 128
+    s2.cfg._repeat_explicit = True
+    s2._restore_profile()
+    assert s2.cfg.repeat_penalty == 1.15 and s2.cfg.repeat_last_n == 128
+
+
+def test_builtin_bad_saved_value_is_ignored(tmp_path):
+    """手改坏的配置不能把启动参数带偏，也不能抛异常卡住启动。"""
+    st = uc.ConfigStore(tmp_path / "config.json")
+    data = st.load()
+    data["ui"]["repeat_penalty"] = "1.5x"       # 非数字
+    data["ui"]["repeat_last_n"] = -5            # 低于官方下限 -1
+    st.save(data)
+
+    s = _session(tmp_path)
+    s._restore_profile()
+    assert s.cfg.repeat_penalty is None, s.cfg.repeat_penalty
+    assert s.cfg.repeat_last_n is None, s.cfg.repeat_last_n

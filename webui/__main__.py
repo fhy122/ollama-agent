@@ -59,6 +59,9 @@ def main(argv: list[str] | None = None):
     cfg._think_explicit = args.think != "off"
     # 同理：显式 --ctx 高于持久化的上一次选择（默认值不算「显式」）
     cfg._ctx_explicit = args.ctx != DEFAULT_CTX
+    # 重复惩罚同理：命令行显式给了就别被配置文件里的旧值顶掉
+    cfg._repeat_explicit = (args.repeat_penalty is not None
+                            or args.repeat_last_n is not None)
     app = WebUIApp(cfg, host=args.host, port=args.port)
     if args.no_hotkey:
         app.start_hotkey = lambda: False  # type: ignore

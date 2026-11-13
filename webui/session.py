@@ -453,6 +453,14 @@ class AgentSession:
             if (isinstance(ctx, int) and not isinstance(ctx, bool)
                     and not getattr(self.cfg, "_ctx_explicit", False)):
                 self.cfg.num_ctx = None if ctx == 0 else min(ctx, MAX_CTX)
+            # 重复惩罚同属「常调参数」：不恢复的话，在偏好里调完、刷新一下
+            # 就回到不下发，等于白调。键不存在 = 从没调过，保留启动参数。
+            ui = self.user_cfg.get("ui") or {}
+            if not getattr(self.cfg, "_repeat_explicit", False):
+                if "repeat_penalty" in ui:
+                    self.cfg.repeat_penalty = parse_repeat_penalty(ui["repeat_penalty"])
+                if "repeat_last_n" in ui:
+                    self.cfg.repeat_last_n = parse_repeat_last_n(ui["repeat_last_n"])
             return
         prof = self.config_store.get_profile(self.user_cfg, pid)
         if not prof:
@@ -1184,6 +1192,11 @@ class AgentSession:
         if pid == BUILTIN_ID:
             ui["think"] = self.cfg.think or ""
             ui["num_ctx"] = self.cfg.num_ctx or 0
+            # 重复惩罚也是「常调参数」，同一个理由：内置条目没有 profile 可存。
+            # 以前这两项只在 profile 分支里回写，用内置 Ollama 时设完一重启就丢，
+            # 用户会以为「设置了但没生效」。None 明确表示「不下发」。
+            ui["repeat_penalty"] = self.cfg.repeat_penalty
+            ui["repeat_last_n"] = self.cfg.repeat_last_n
         # 工具/技能策略：重启后仍生效。不写这三项的话，用户关掉一堆工具、
         # 第二天打开又全回来了，会以为「设置没保存」。
         ui["tool_mode"] = normalize_mode(getattr(self.cfg, "tool_mode", "all"))

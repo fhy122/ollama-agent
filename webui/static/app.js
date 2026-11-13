@@ -2365,7 +2365,7 @@ const RP_TIERS = [
   { max: 1.25, cls: "warn",
     text: "已到警戒线：实测 1.2 起会偶发用字面 <br>/<ul> 顶替 markdown 标记，表格分隔行时有时无。再往上不建议。" },
   { max: Infinity, cls: "danger",
-    text: "危险：实测 1.5 时表格塌成字面 HTML、工具参数被污染（路径里串进 </path><content>），生成会一路跑满上下文被截断——表现就是「格式没了、回答只有一半」。退回 1.05–1.1 即可恢复。" },
+    text: "危险：实测 1.5 时表格塌成字面 HTML、工具参数被污染（路径里串进 </path><content>），回答两种崩法都有——常见的是半句就断（提前收尾），也有一路收不住跑满上下文被截断。表现就是你看到的「格式没了、回答只有一半」。退回 1.05–1.1 即可恢复。" },
 ];
 
 function renderRpHint(inputId, hintId, supported) {

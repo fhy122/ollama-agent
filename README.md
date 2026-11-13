@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-340%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-343%20passed-brightgreen)
 ![Runtime](https://img.shields.io/badge/Ollama-localhost%3A11434-8b5cf6)
 ![UI](https://img.shields.io/badge/Web_UI-零框架-orange)
 
@@ -777,6 +777,7 @@ socket 超时语义是「两块数据之间的间隔」而非总时长：默认�
 （或 `/repeat 1.1 256`、WebUI 偏好），再用 `python evals/tool_hit.py` 对比工具命中率决定要不要设成默认。
 `repeat_last_n` 默认只看最近 64 token，长段落复读建议调大；`-1` = 整个 `num_ctx`，代价是每步计算变重。
 OpenAI 兼容后端不下发这两个字段，界面会置灰并说明原因。
+用内置 Ollama 时这两项也存在 `config.json` 的 `ui` 段（内置条目没有 profile 可存），改完重启仍然生效；显式 `--repeat-penalty` / `--repeat-last-n` 优先级更高。
 
 **实测的安全区间（`qwen35-2b-local:latest`，只改这一个值、各跑两轮）**：
 
@@ -785,11 +786,11 @@ OpenAI 兼容后端不下发这两个字段，界面会置灰并说明原因。
 | 不下发 / 1.05 / 1.1 | 标题、表格（含分隔行）、粗体、分隔线齐全，零字面 HTML，工具参数合法 |
 | 1.2 | 开始偶发用字面 `<br>`/`<ul>` 顶替 markdown 标记；表格分隔行时有时无 |
 | 1.3 以上 | 表格基本塌掉，生成明显变长、跑题 |
-| 1.5 | 表格完全消失（只剩零星 `|` 行）；`write_file` 的 `path` 参数被污染成 `docs/pln_markdown.txt\n</path>\n<content>…`；一路生成到撑满上下文被硬截断 |
+| 1.5 | 表格完全消失（只剩零星 `|` 行）；`write_file` 的 `path` 参数被污染成 `docs/pln_markdown.txt\n</path>\n<content>…`；**收尾两种崩法**：常见是半句就断（`done_reason=stop` 但话没说完，例如停在「…且预算充足。」），也有一路收不住的（跑满 `num_ctx` 被 `done_reason=length` 截断） |
 
 原因是惩罚**按 token 无差别**作用，而默认回看窗口只有 64 token——markdown 的 `|`、`#`、`*`
-在表格里高频重复，正好被压制，模型于是改用 HTML 标签表达；同时为了躲开惩罚它越写越长，
-最后撞上 `num_ctx`（本地模型自带 8192）被截断，表现就是「格式没了 + 回答只有一半」。
+在表格里高频重复，正好被压制，模型于是改用 HTML 标签表达；同时为了躲开惩罚它容易失控：
+多数时候是提前收尾、话停在半句，也有一路写下去撞满 `num_ctx` 才被截断的——两种表现都是「格式没了 + 回答只有一半」。
 **这是解码参数的作用结果，不是渲染器的问题**——同样一段话在 1.1 下渲染完全正常。
 
 界面上 `repeat_penalty` 现在会随输入实时分档给出结论（安全 / 警戒 / 危险），

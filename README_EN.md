@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-340%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-343%20passed-brightgreen)
 ![Runtime](https://img.shields.io/badge/Ollama-localhost%3A11434-8b5cf6)
 ![UI](https://img.shields.io/badge/Web_UI-zero--framework-orange)
 
