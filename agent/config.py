@@ -125,6 +125,14 @@ class AgentConfig:
     stream_retries: int = DEFAULT_MAX_RETRIES   # 断流/超时自动重试次数上限（0 = 关闭，行为同旧版）
     spill_max_chars: int = 12000        # 工具结果超此字符数→全文落盘+预览（0 = 关闭）
     tool_call_arg_max_chars: int = 2000  # 请求视图里工具调用大文本参数上限（0 = 关闭；只改视图不改日志）
+    # ---- 工具结果预算（spill 管「单条太大」，这里管「很多条加起来太大」）----
+    # 改代码时常一次 read 十几个中等文件：单条都没到 spill 线，却全部留在 history，
+    # 之后每一步工具调用、每一轮新对话都重推一遍。这里给工具结果设总预算，超出的
+    # 按相关性/新旧降级成「取回指引」——只改请求视图，日志一字不改、配对不破坏。
+    tool_result_cap_enabled: bool = True
+    tool_result_budget_ratio: float = 0.2   # 工具结果总预算 = num_ctx × ratio
+    tool_result_keep_recent: int = 6        # 最近 N 条工具结果无条件全留（当前任务在用）
+    tool_result_min_chars: int = 800        # 单条短于此不参与淘汰（省不了多少还伤可读性）
     # ---- 长会话压缩（参考 DeepSeek Harness compaction-basic，阈值一律可配）----
     compaction_enabled: bool = True            # 关掉即完全不压缩，行为同旧版
     compaction_threshold_ratio: float = 0.8   # 触发阈值 = min(num_ctx*ratio, num_ctx-O-headroom)

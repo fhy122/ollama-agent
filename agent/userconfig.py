@@ -206,6 +206,16 @@ class ConfigStore:
         for k in ("repeat_penalty", "repeat_last_n"):
             if k in ui and ui[k] is not None:
                 ui_out[k] = ui[k]
+        # 工具结果预算（agent/context_view.py:cap_tool_results）：缺省沿用
+        # AgentConfig 默认值；手改坏的值当没写，别让一个笔误卡住启动。
+        for k, cast in (("tool_result_budget_ratio", float),
+                        ("tool_result_keep_recent", int),
+                        ("tool_result_min_chars", int)):
+            if k in ui:
+                try:
+                    ui_out[k] = cast(ui[k])
+                except (TypeError, ValueError):
+                    pass
         return {
             "version": VERSION,
             "active": active,
@@ -313,4 +323,8 @@ def to_agent_patch(profile: dict, ui: dict) -> dict:
         "tool_mode": (ui or {}).get("tool_mode", "all"),
         "tools_enabled": split_names((ui or {}).get("tools_enabled")),
         "skills_disabled": split_names((ui or {}).get("skills_disabled")),
+        # 工具结果预算：切模型时一并带上，否则 update_config 会把它们打回默认
+        "tool_result_budget_ratio": (ui or {}).get("tool_result_budget_ratio", 0.2),
+        "tool_result_keep_recent": (ui or {}).get("tool_result_keep_recent", 6),
+        "tool_result_min_chars": (ui or {}).get("tool_result_min_chars", 800),
     }

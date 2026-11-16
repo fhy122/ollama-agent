@@ -199,13 +199,133 @@ def slim_tool_call_args(messages: list[dict], max_chars: int) -> list[dict]:
     return out
 
 
+# 当前问题里的检索词：英文标识符按整词，中文按 2-gram（无分词依赖）。
+_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]+")
+
+# spill 预览的标记（agent/spill.py:28）：已是预览就不再二次降级。
+_SPILL_MARK = "完整结果已存至"
+
+
+def _query_terms(text: str) -> set[str]:
+    """把当前问题拆成轻量检索词，用于判断哪条工具结果更相关。
+
+    不做向量检索：会话内判断相关性，文件名/标识符命中的信号已经足够强，
+    而 2-gram 能覆盖中文路径与术语，不引入分词或 embedding 依赖。
+    """
+    terms = {w.lower() for w in _WORD_RE.findall(text or "")}
+    for run in _CJK_RUN_RE.findall(text or ""):
+        for i in range(len(run) - 1):
+            terms.add(run[i:i + 2])
+    return terms
+
+
+def _hits(text: str, terms: set[str]) -> int:
+    if not terms:
+        return 0
+    low = (text or "").lower()
+    return sum(1 for t in terms if t in low)
+
+
+def _omit_tool_result(msg: dict, path: str) -> str:
+    """降级文案：告诉模型「省略了什么、原文在哪、怎么取回」，禁止凭记忆重建。"""
+    name = str(msg.get("tool_name") or "工具")
+    n = len(msg.get("content") or "")
+    if name == "read_file" and path:
+        how = f'read_file(path="{path}") 重新读取'
+    else:
+        how = f"用相同参数重新调用 {name}"
+    return (f"[工具结果已省略：{name} 原约 {n} 字符。为控制上下文，较早的工具结果"
+            f"不再随请求发送；原文仍完整保留在会话日志中。需要时请{how}，"
+            "不要凭记忆重建内容。]")
+
+
+def cap_tool_results(messages: list[dict], cfg=None, user_text: str = "") -> list[dict]:
+    """工具结果总预算：很多条加起来太大时，从最旧/最不相关的开始降级。
+
+    spill 管「单条超过 spill_max_chars」，compaction 管「旧轮次整体」，
+    这一层管中间地带：一次改代码读了十几个中等文件，单条都不超 spill 线，
+    加起来却把上下文撑满，并在后续每一步、每一轮里反复重付。
+
+    保留优先级：最近 N 条工具结果 > 与当前问题相关的 > 较新的。
+    任何被降级的消息都保留 tool_call_id 与 tool_name（配对不破坏），
+    只改写 content；history 一字不改，日志仍可完整回放。
+    """
+    if cfg is None or not getattr(cfg, "tool_result_cap_enabled", True):
+        return messages
+    num_ctx = int(getattr(cfg, "num_ctx", 0) or 65536)
+    ratio = float(getattr(cfg, "tool_result_budget_ratio", 0.2) or 0.0)
+    if ratio <= 0:
+        return messages
+    budget = int(num_ctx * ratio)
+    keep_recent = int(getattr(cfg, "tool_result_keep_recent", 6) or 0)
+    min_chars = int(getattr(cfg, "tool_result_min_chars", 800) or 0)
+
+    # tool_call_id -> 路径：降级文案要能指回原文件，模型才知道怎么重读。
+    call_path: dict[str, str] = {}
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            for c in m["tool_calls"]:
+                fn = c.get("function") or {}
+                args = fn.get("arguments") or {}
+                call_path[str(c.get("id") or "")] = (
+                    str(args.get("path") or "") if isinstance(args, dict) else "")
+
+    tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    keep_idxs = set(tool_idxs[-keep_recent:]) if keep_recent > 0 else set()
+
+    used = 0
+    candidates: list[tuple[int, str, int]] = []      # (下标, 路径, tokens)
+    for i in tool_idxs:
+        m = messages[i]
+        text = m.get("content") or ""
+        n = compaction.estimate_message_tokens(m)
+        path = call_path.get(str(m.get("tool_call_id") or ""), "")
+        if (i in keep_idxs or len(text) < min_chars
+                or _SPILL_MARK in text[-400:]):
+            used += n                                  # 无条件保留，先占预算
+        else:
+            candidates.append((i, path, n))
+
+    if not candidates:
+        return messages
+
+    terms = _query_terms(user_text)
+
+    def _rank(item: tuple[int, str, int]) -> tuple[int, int]:
+        i, path, _ = item
+        text = messages[i].get("content") or ""
+        rel = _hits(path, terms) * 3 + _hits(text[:2000], terms)
+        return (-rel, -i)                              # 相关优先，其次新的优先
+
+    ordered = sorted(candidates, key=_rank)
+    total = used + sum(n for _, _, n in ordered)
+    if total <= budget:
+        return messages
+
+    # 从**最差**的一条开始降级，而不是从最好的开始装预算：
+    # 后者的边界很脆——最相关的那条只要比剩余预算大一点就会被砍，
+    # 等于「相关性优先」形同虚设。这里保证排名第一的永不降级（除非只剩它）。
+    out = list(messages)
+    for k, (i, path, n) in enumerate(reversed(ordered)):
+        if total <= budget:
+            break
+        if k == len(ordered) - 1:                     # 最相关的一条：不再降级
+            break
+        new = dict(out[i])
+        new["content"] = _omit_tool_result(out[i], path)
+        total -= n - compaction.estimate_message_tokens(new)
+        out[i] = new
+    return out
+
+
 def project_messages(history: list[dict], user_text: str = "",
                      turn_start: int | None = None, cfg=None) -> list[dict]:
     """把落盘历史投影成本次请求的模型视图。
 
     顺序不能换：压缩先做（它操作 history 的绝对下标），再把 turn_start
-    按位移映射到压缩视图，最后跑三条折叠规则。cfg 只用来读可调阈值
-    （DSH AGENTS.md:144）；None 时保守地不做参数摘要。
+    按位移映射到压缩视图，最后跑三条折叠规则 + 工具结果预算。
+    cfg 只用来读可调阈值（DSH AGENTS.md:144）；None 时保守地不做参数摘要。
     """
     view, shift = compaction.apply_checkpoints(history)
     mapped_start = None if turn_start is None else turn_start - shift
@@ -213,4 +333,5 @@ def project_messages(history: list[dict], user_text: str = "",
                                  turn_start=mapped_start)
     view = dedup_skill_bodies(view)
     max_chars = int(getattr(cfg, "tool_call_arg_max_chars", 0) or 0)
-    return slim_tool_call_args(view, max_chars)
+    view = slim_tool_call_args(view, max_chars)
+    return cap_tool_results(view, cfg=cfg, user_text=user_text)
