@@ -231,6 +231,17 @@ def test_prompt_says_no_tools_when_none(ws_with_skill):
     assert "不要编造" in p
 
 
+def test_prompt_drives_browse_action_not_just_telling_user(ws_with_skill):
+    """读到登录/验证页时，提示词必须要求下一步是工具调用(identity=user 弹窗)，
+    而不是一句「请登录」结束回合——实测 qwen 会偷懒只告知用户。无 browse_url 时不注入。"""
+    p = new_history(str(ws_with_skill), AgentConfig())[0]["content"]
+    assert "下一步必须是一个工具调用" in p
+    assert "identity='user'" in p or 'identity="user"' in p
+    assert "不要只用一句话告诉用户" in p
+    no = new_history(str(ws_with_skill), AgentConfig(tool_mode="none"))[0]["content"]
+    assert "下一步必须是一个工具调用" not in no
+
+
 def test_prompt_unchanged_when_all_tools(ws_with_skill):
     """全部启用时不加任何限制语，升级零行为变化。"""
     p = new_history(str(ws_with_skill), AgentConfig())[0]["content"]

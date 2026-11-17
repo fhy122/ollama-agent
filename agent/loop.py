@@ -10,8 +10,8 @@ import time
 
 from agent.backends import ChatClient
 from agent import longdoc
-from agent.config import (SYSTEM_PROMPT_ASK_RULE, SYSTEM_PROMPT_CORE,
-                         SYSTEM_PROMPT_FILE_RULE, AgentConfig)
+from agent.config import (SYSTEM_PROMPT_ASK_RULE, SYSTEM_PROMPT_BROWSE_RULE,
+                         SYSTEM_PROMPT_CORE, SYSTEM_PROMPT_FILE_RULE, AgentConfig)
 from agent import context_view
 from agent import compaction
 from agent.events import ConsoleEmitter
@@ -201,6 +201,10 @@ def new_history(workspace: str | None = None, cfg=None) -> list:
     # 它只会说一句「请问您想选哪种」然后结束回合，用户答完还得重讲背景。
     if toolpolicy.is_allowed(cfg, "ask_user"):
         prompt += SYSTEM_PROMPT_ASK_RULE
+    # 读到需人工操作的页面时，下一步必须是 browse_url(identity=user) 工具调用，
+    # 而不是一句「请登录」就结束（实测 qwen 会这样偷懒，且 guest 无头无从操作）。
+    if toolpolicy.is_allowed(cfg, "browse_url"):
+        prompt += SYSTEM_PROMPT_BROWSE_RULE
     if workspace:
         prompt += f"\n当前工作空间目录: {workspace}"
     prompt += _policy_hint(cfg)
