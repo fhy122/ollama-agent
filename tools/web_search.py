@@ -25,7 +25,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 from agent.registry import ToolContext, ToolResult, tool
-from tools.browse_url import _pw_page, pw_new_page  # 复用浏览器单例
+from tools.browse_url import run_with_page  # 复用浏览器单例（常驻 worker 线程）
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -340,48 +340,49 @@ def _search_baidu(query: str, max_results: int, attempts: int = 2) -> dict:
 
     注意：百度 AI 总结卡是灰度实验（baikan-pc-experiment），随机出现；
     每次用独立 page 防状态串扰，缺席时重试 attempts 轮。
+
+    page 只在 run_with_page 的闭包内活着，且整个渲染流程都在 browse_url 的
+    常驻 worker 线程里跑——Playwright sync 对象跨线程用会抛
+    `Cannot switch to a different thread`。
     """
     url = BAIDU_URL.format(q=urllib.parse.quote_plus(query))
-    data: dict = {"ai": None, "results": []}
 
-    for attempt in range(attempts):
-        page = pw_new_page()  # 独立页面，用完即关
+    def render(page) -> dict:
+        data: dict = {"ai": None, "results": []}
+        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        # 轻微滚动触发懒渲染
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            # 轻微滚动触发懒渲染
-            try:
-                page.mouse.wheel(0, 1200)
-                page.wait_for_timeout(1500)
-                page.mouse.wheel(0, -1200)
-            except Exception:
-                pass
-            page.wait_for_timeout(5000)
-            data = page.evaluate(_BAIDU_AI_JS) or data
+            page.mouse.wheel(0, 1200)
+            page.wait_for_timeout(1500)
+            page.mouse.wheel(0, -1200)
+        except Exception:
+            pass
+        page.wait_for_timeout(5000)
+        data = page.evaluate(_BAIDU_AI_JS) or data
 
-            if data.get("ai"):
-                # 有 AI 卡：真实鼠标点击"展开/更多"（合成 click 会被前端忽略）后重抓
-                try:
-                    import re as _re
-                    fold = (page.locator('div[class*="cosc-card"]')
-                            .filter(has_text=_re.compile("均由AI生成|AI总结|体验百度AI"))
-                            .locator('[class*="has-fold-button"], [class*="fold-switch"]').first)
-                    if fold.count():
-                        fold.click(timeout=2000)
-                        page.wait_for_timeout(2500)
-                        data = page.evaluate(_BAIDU_AI_JS) or data
-                except Exception:
-                    pass
-                break
-            if not data.get("results"):
-                page.wait_for_timeout(2500)  # 渲染慢的兜底
-                data = page.evaluate(_BAIDU_AI_JS) or data
-            if data.get("ai") or data.get("results"):
-                break
-        finally:
+        if data.get("ai"):
+            # 有 AI 卡：真实鼠标点击"展开/更多"（合成 click 会被前端忽略）后重抓
             try:
-                page.close()
+                import re as _re
+                fold = (page.locator('div[class*="cosc-card"]')
+                        .filter(has_text=_re.compile("均由AI生成|AI总结|体验百度AI"))
+                        .locator('[class*="has-fold-button"], [class*="fold-switch"]').first)
+                if fold.count():
+                    fold.click(timeout=2000)
+                    page.wait_for_timeout(2500)
+                    data = page.evaluate(_BAIDU_AI_JS) or data
             except Exception:
                 pass
+        elif not data.get("results"):
+            page.wait_for_timeout(2500)  # 渲染慢的兜底
+            data = page.evaluate(_BAIDU_AI_JS) or data
+        return data
+
+    data: dict = {"ai": None, "results": []}
+    for _attempt in range(attempts):
+        data = run_with_page(render) or data
+        if data.get("ai") or data.get("results"):
+            break
 
     ai = data.get("ai")
     if ai and ai.get("links"):

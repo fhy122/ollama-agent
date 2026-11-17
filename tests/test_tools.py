@@ -336,7 +336,8 @@ def main() -> None:
         print("PASS: web_screenshot（HTML→PNG、全页长图、二选一/空参/协议校验）")
 
         # ---- browse_url：拦截检测 + identity 参数（纯逻辑，不联网）----
-        from tools.browse_url import _detect_block, _read_page, _normalize_text
+        from tools.browse_url import (_detect_block, _read_page, _normalize_text,
+                                      _cdp_alive, _find_browser, CDP_PROFILE_DEFAULT)
         # 知乎 40362：HTTP 200 里的错误 JSON，短正文必须识别为拦截
         zhihu_block = ('{"error":{"message":"您当前请求存在异常，暂时限制本次访问。",'
                        '"code":40362}}')
@@ -352,11 +353,17 @@ def main() -> None:
         # schema 暴露 identity 参数
         bspec = next(s for s in specs if s["function"]["name"] == "browse_url")
         props = bspec["function"]["parameters"]["properties"]
-        assert "identity" in props and set(props["identity"]["enum"]) == {"guest", "user"}
+        assert "identity" in props and set(props["identity"]["enum"]) == {"auto", "guest", "user"}
+        assert "auto" in props["identity"]["description"], "默认应说明 auto 自动接管"
         # 非法 identity 在联网前就被拒（不发浏览器请求）
         ctx_b = ToolContext(workspace=ws)
         r = dispatch("browse_url", {"url": "https://example.com", "identity": "root"}, ctx_b)
-        assert "错误" in r.text and "guest" in r.text, r.text
+        assert "错误" in r.text and "auto" in r.text, r.text
+        # 自动启动的纯逻辑判据（不真的起浏览器）：探活/找浏览器/profile 固定
+        assert _cdp_alive("http://127.0.0.1:1") is False, "死端口应判为不活"
+        assert _find_browser() is not None, "本机应有 Chrome/Edge（自动化前提）"
+        assert "ollama-agent" in CDP_PROFILE_DEFAULT.replace("\\", "/"), \
+            "profile 应是固定的专用目录，不是临时随机目录"
         # _read_page：JS 导航销毁执行上下文要重试，不把一次性异常当失败
         class _FlakyPage:
             def __init__(self):
@@ -390,7 +397,45 @@ def main() -> None:
         assert norm == "一 RNN 概述 Xt−1\n下一行", repr(norm)
         # 关键：不能用 NFKC 一把梭——上标 ¹、全角 A 必须原样保留
         assert _normalize_text("x¹＋Ａ") == "x¹＋Ａ", "只动空格，不动别的字符"
-        print("PASS: browse_url 拦截检测 + identity 参数 + _read_page 导航重试 + 不可见空格归一化")
+
+        # 线程亲和回归（bug: 第二轮对话 browse_url 报
+        # "TargetClosedError: Playwright connection closed"，0s 失败）：
+        # WebUI 是每请求一线程，Playwright sync 对象绑定创建它的线程，
+        # 线程退出后连接已死但模块级单例还指向它。所以所有浏览器操作必须
+        # 投递到常驻 worker 线程，绝不能跟着调用线程走。
+        import threading as _th
+        from tools.browse_url import run_on_pw, _is_stale
+        seen = {}
+
+        def _grab():
+            return _th.get_ident()
+
+        # 从多个不同线程提交，执行线程必须始终是同一个 worker
+        for _ in range(3):
+            box = {}
+            t = _th.Thread(target=lambda b: b.update(tid=run_on_pw(_grab)), args=(box,))
+            t.start()
+            t.join()
+            seen.setdefault("tids", set()).add(box["tid"])
+        # 调用方主线程也走同一条路，必须落到同一个 worker
+        seen["tids"].add(run_on_pw(_grab))
+        assert len(seen["tids"]) == 1, f"所有调用应固定在同一 worker 线程，实际: {seen['tids']}"
+        assert list(seen["tids"])[0] != _th.get_ident(), "worker 不应是调用方线程"
+        # 异常要原样透传（不能吞成 None 让上层误判成功）
+        try:
+            run_on_pw(lambda: (_ for _ in ()).throw(ValueError("boom")))
+            assert False, "worker 内的异常必须透传"
+        except ValueError as e:
+            assert "boom" in str(e), e
+        # 连接失效类错误必须能被识别（据此触发重建重试，而不是当"打不开网页"甩给模型）
+        for msg in ("TargetClosedError: Playwright connection closed",
+                    "Cannot switch to a different thread",
+                    "Target page, context or browser has been closed"):
+            assert _is_stale(RuntimeError(msg)), f"应识别为失效连接: {msg}"
+        assert not _is_stale(RuntimeError("net::ERR_NAME_NOT_RESOLVED")), \
+            "DNS 解析失败是正常错误，不该触发重建"
+        print("PASS: browse_url 拦截检测 + identity 参数 + _read_page 导航重试"
+              " + 不可见空格归一化 + Playwright 线程亲和")
 
         # ---- delete_file：删文件 / 空目录 / 非空目录保护 / recursive ----
         del_f = ws / "todel.txt"

@@ -4,8 +4,12 @@
   browse_url      → 取正文文本（省 context，模型读字）
   web_screenshot  → 出图片（模型看画面：版式/配色/对齐/错位）
 
-浏览器复用 browse_url 里的单例（_pw_page），避免重复冷启动，
+浏览器复用 browse_url 里的单例（run_with_page），避免重复冷启动，
 也就顺带继承了那套 --disable-gpu 参数——本地模型和浏览器抢显存会一起崩。
+
+注意：所有 page 操作必须在 browse_url 的常驻 worker 线程里跑（run_with_page），
+绝不能把 page 带回调用线程——Playwright sync 对象跨线程用会抛
+`Cannot switch to a different thread`。
 """
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ import time
 from pathlib import Path
 
 from agent.registry import ToolContext, ToolResult, tool
-from tools.browse_url import pw_close, pw_new_page
+from tools.browse_url import run_with_page
 
 OUT_DIR_NAME = "ollama_agent_render"   # 与 render_sheet 共用输出目录
 
@@ -79,15 +83,11 @@ def web_screenshot(ctx: ToolContext, url: str = "", html: str = "",
     w = _clamp(width, MIN_W, MAX_W, DEFAULT_W)
     h = _clamp(height, MIN_H, MAX_H, DEFAULT_H)
 
-    try:
-        page = pw_new_page()
-    except RuntimeError as e:
-        return ToolResult(f"[错误] {e}")
-
-    title = ""
-    truncated = False
-    fmt = "png"
-    try:
+    def shoot(page):
+        """在 worker 线程里跑完整截图流程，返回 (raw_bytes, fmt, title, truncated)。"""
+        title = ""
+        truncated = False
+        fmt = "png"
         page.set_viewport_size({"width": w, "height": h})
         if url:
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
@@ -121,16 +121,17 @@ def web_screenshot(ctx: ToolContext, url: str = "", html: str = "",
                 fmt = "jpeg"
             except Exception:
                 pass                            # JPEG 失败就保留原 PNG
+        return raw, fmt, title, truncated
+
+    try:
+        raw, fmt, title, truncated = run_with_page(shoot)
+    except RuntimeError as e:
+        return ToolResult(f"[错误] {e}")
     except Exception as e:
-        pw_close()                              # 页面崩了就重启浏览器，下次调用可用
+        # 页面崩了（Target crashed）时 run_with_page 已重建浏览器，下次调用可用
         return ToolResult(
             f"[错误] 截图失败 {url or '(inline html)'}: "
             f"{type(e).__name__}: {str(e)[:300]}")
-    finally:
-        try:
-            page.close()
-        except Exception:
-            pass
 
     out_dir = Path(tempfile.gettempdir()) / OUT_DIR_NAME
     out_dir.mkdir(parents=True, exist_ok=True)
