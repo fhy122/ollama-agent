@@ -77,7 +77,8 @@ def main() -> None:
         expected.add("web_chat")
     missing = expected - names
     assert not missing, f"缺少工具: {missing}"
-    assert len(tools.LOADED_MODULES) == len(specs), "工具模块数与注册数不一致"
+    # 一个模块可注册多个工具，故注册数只会 ≥ 模块数；missing 断言已保证每模块都注册了工具。
+    assert len(specs) >= len(tools.LOADED_MODULES), "有模块导入后没注册任何工具"
 
     with tempfile.TemporaryDirectory() as td:
         ws = Path(td) / "ws"
@@ -335,21 +336,13 @@ def main() -> None:
         assert "错误" in r.text and "http" in r.text, r.text
         print("PASS: web_screenshot（HTML→PNG、全页长图、二选一/空参/协议校验）")
 
-        # ---- browse_url：拦截检测 + identity 参数（纯逻辑，不联网）----
-        from tools.browse_url import (_detect_block, _read_page, _normalize_text,
-                                      _cdp_alive, _find_browser, CDP_PROFILE_DEFAULT)
-        # 知乎 40362：HTTP 200 里的错误 JSON，短正文必须识别为拦截
-        zhihu_block = ('{"error":{"message":"您当前请求存在异常，暂时限制本次访问。",'
-                       '"code":40362}}')
-        assert _detect_block("", zhihu_block) == "40362", "应识别知乎 40362 风控 JSON"
-        assert _detect_block("", "访问受限，请稍后再试") == "访问受限", "应识别通用拦截文案"
-        assert _detect_block("Just a moment...", "Checking your browser") is not None, \
-            "应识别 Cloudflare 验证页"
-        # 长文里恰好提到这些词不能被误伤（正文超阈值直接放行）
-        long_article = "正文" * 700 + "40362"
-        assert _detect_block("正常文章", long_article) is None, "长文不应被误判为拦截"
-        # 正常短正文也要放行
-        assert _detect_block("标题", "这是一篇正常的短文。") is None
+        # ---- browse_url：机械读页能力 + identity 参数（纯逻辑，不联网）----
+        # 设计：工具只机械地读页面+原样返回，不做任何"是不是登录/拦截/需点击"的
+        # 语义判断 —— 那由模型读正文时自己看。所以这里只测机械函数，不测判断表。
+        from tools.browse_url import (_read_page, _normalize_text,
+                                      _cdp_alive, _find_browser, CDP_PROFILE_DEFAULT,
+                                      _pick_cdp_context, _cdp_browser_alive,
+                                      _cdp_sticky_page)
         # schema 暴露 identity 参数
         bspec = next(s for s in specs if s["function"]["name"] == "browse_url")
         props = bspec["function"]["parameters"]["properties"]
@@ -398,6 +391,114 @@ def main() -> None:
         # 关键：不能用 NFKC 一把梭——上标 ¹、全角 A 必须原样保留
         assert _normalize_text("x¹＋Ａ") == "x¹＋Ａ", "只动空格，不动别的字符"
 
+        # ---- CDP "已连接但没有任何上下文" 回归（0.03s 秒失败，页面根本没打开）----
+        # 端点 /json/version 200 但 browser.contexts 为空：轮询等到 target 注册，
+        # 不能一上来就抛"没有任何上下文"。
+        import time as _time
+        _orig_sleep = _time.sleep
+
+        class _Ctx:
+            def __init__(self, tag): self.tag = tag
+            def new_page(self): return f"page-of-{self.tag}"
+
+        class _BrowserEmptyThenReady:
+            """前两次 contexts 为空，第三次出现默认 context。"""
+            def __init__(self): self.polls = 0
+            @property
+            def contexts(self):
+                self.polls += 1
+                return [_Ctx("default")] if self.polls >= 3 else []
+            def new_context(self):
+                raise AssertionError("target 已注册时不该走兜底 new_context")
+
+        import tools.browse_url as _bu
+        _bu.time.sleep = lambda _s: None          # 跳过真实等待
+        try:
+            b = _BrowserEmptyThenReady()
+            p = _pick_cdp_context(b).new_page()
+            assert p == "page-of-default" and b.polls == 3, \
+                f"应轮询到 context 出现再返回，实际 polls={b.polls}"
+        finally:
+            _bu.time.sleep = _orig_sleep
+
+        # contexts 一直为空（用户关掉所有窗口只剩后台进程）：new_context 兜底，
+        # 保证页面仍能打开，而不是抛"没有任何上下文"。
+        class _BrowserAlwaysEmpty:
+            def __init__(self): self.made = 0
+            @property
+            def contexts(self): return []
+            def new_context(self):
+                self.made += 1
+                return _Ctx("fresh")
+        _bu.time.sleep = lambda _s: None
+        try:
+            b2 = _BrowserAlwaysEmpty()
+            p2 = _pick_cdp_context(b2).new_page()
+            assert p2 == "page-of-fresh" and b2.made == 1, \
+                "contexts 持续为空必须 new_context 兜底且只建一次"
+        finally:
+            _bu.time.sleep = _orig_sleep
+
+        # 失活连接判据：None / is_connected() 抛异常 / 返回 False 一律判死；
+        # 真实 Playwright Browser 无 disconnect()，别再依赖它做存活判断。
+        class _DeadBrowser:
+            def is_connected(self): return False
+        class _ErrBrowser:
+            def is_connected(self): raise RuntimeError("browser has been closed")
+        class _AliveBrowser:
+            def is_connected(self): return True
+        assert _cdp_browser_alive(None) is False
+        assert _cdp_browser_alive(_DeadBrowser()) is False
+        assert _cdp_browser_alive(_ErrBrowser()) is False
+        assert _cdp_browser_alive(_AliveBrowser()) is True
+
+        # ---- 常驻页回归（bug: identity=user 跳到目标页又秒退，只剩 about:blank）----
+        # page.close() 把目标页关了是根因；常驻页必须复用、不新建、不关掉。
+        # 用一个最小 browser 桩，只满足 _cdp_sticky_page 用到的接口。
+        import tools.browse_url as _bu2
+
+        class _FakePage:
+            def __init__(self, url, closed=False):
+                self.url = url
+                self._closed = closed
+            def is_closed(self): return self._closed
+            def close(self): self._closed = True
+
+        class _FakeCtx:
+            def __init__(self, urls):
+                self.pages = [_FakePage(u) for u in urls]
+                self.created = 0
+            def new_page(self):
+                self.created += 1
+                p = _FakePage("about:blank")
+                self.pages.append(p)
+                return p
+
+        class _FakeBrowser:
+            def __init__(self, ctx): self.ctx = ctx
+
+        fake_ctx = _FakeCtx(["about:blank"])
+        saved = {k: _bu2._CDP[k] for k in ("browser", "page", "endpoint")}
+        saved_browser_fn, saved_pick_fn = _bu2._cdp_browser, _bu2._pick_cdp_context
+        try:
+            _bu2._cdp_browser = lambda: _FakeBrowser(fake_ctx)
+            _bu2._pick_cdp_context = lambda b: b.ctx
+            _bu2._CDP["page"] = None
+            p1 = _cdp_sticky_page()
+            assert p1 is fake_ctx.pages[0] and fake_ctx.created == 0, \
+                "应复用已有 about:blank，不新建页（否则留空标签页）"
+            p2 = _cdp_sticky_page()
+            assert p2 is p1 and fake_ctx.created == 0, \
+                "再次调用必须复用同一常驻页，不累积标签页"
+            assert not p1.is_closed(), "常驻页不能被关（关了就秒退回 about:blank）"
+            # 页被外部关掉时，下次应重建一个而不是复用死页
+            p1.close()
+            p3 = _cdp_sticky_page()
+            assert p3 is not p1 and not p3.is_closed(), "死页必须重建"
+        finally:
+            for k, v in saved.items(): _bu2._CDP[k] = v
+            _bu2._cdp_browser, _bu2._pick_cdp_context = saved_browser_fn, saved_pick_fn
+
         # 线程亲和回归（bug: 第二轮对话 browse_url 报
         # "TargetClosedError: Playwright connection closed"，0s 失败）：
         # WebUI 是每请求一线程，Playwright sync 对象绑定创建它的线程，
@@ -434,7 +535,7 @@ def main() -> None:
             assert _is_stale(RuntimeError(msg)), f"应识别为失效连接: {msg}"
         assert not _is_stale(RuntimeError("net::ERR_NAME_NOT_RESOLVED")), \
             "DNS 解析失败是正常错误，不该触发重建"
-        print("PASS: browse_url 拦截检测 + identity 参数 + _read_page 导航重试"
+        print("PASS: browse_url 机械读页 + identity 参数 + _read_page 导航重试"
               " + 不可见空格归一化 + Playwright 线程亲和")
 
         # ---- delete_file：删文件 / 空目录 / 非空目录保护 / recursive ----

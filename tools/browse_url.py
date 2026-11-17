@@ -36,8 +36,24 @@ _WORKER: dict = {"thread": None, "queue": None, "tid": None,
 # guest 无登录浏览器单例（懒加载，整轮复用）
 _PW: dict = {"browser": None, "page": None}
 
-# CDP 接管浏览器：绝不能在退出时 close 掉用户的窗口，只 disconnect。
-_CDP: dict = {"browser": None, "endpoint": None}
+# CDP 接管浏览器：绝不能 close 用户的窗口，只清引用 + pw.stop() 断连接。
+# 注意：Playwright Python 的 Browser 没有 disconnect()，别再假装调用它。
+_CDP: dict = {"browser": None, "endpoint": None, "page": None}
+
+# CDP 端点活着（/json/version 200）不等于已有可用 context/page target：
+# 用户关掉最后一个窗口、后台进程残留、启动未稳时 contexts 都可能为空。
+# 先轮询等它就绪，再兜底新建，而不是立刻抛"没有任何上下文"。
+_CDP_CTX_WAIT_TRIES = 10
+_CDP_CTX_WAIT_INTERVAL = 0.3
+
+
+def _cdp_browser_alive(browser) -> bool:
+    """CDP 连接活体判据。Playwright Python 的 Browser 无 disconnect()，
+    is_connected() 是唯一信号；失效/异常对象一律判死，交给上层重建。"""
+    try:
+        return browser is not None and bool(browser.is_connected())
+    except Exception:
+        return False
 
 # 默认调试端口，可用环境变量 OLLAMA_AGENT_CDP 覆盖（如换端口/远程 CDP）
 CDP_ENDPOINT_ENV = "OLLAMA_AGENT_CDP"
@@ -62,21 +78,6 @@ _BROWSER_CANDIDATES = (
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
-# 反爬/验证页特征。知乎 40362 是 HTTP 200 + 一段错误 JSON，goto 不抛异常，
-# 若不检测就会被当成"正文"交出去。只在短正文里匹配，避免误伤长文里恰好
-# 提到这些词的正常文章。
-_BLOCK_SIGNALS = (
-    "40362",
-    "请求存在异常",
-    "暂时限制本次访问",
-    "访问受限",
-    "请登录",
-    "enable javascript and cookies to continue",
-    "checking your browser",
-    "just a moment",
-)
-_BLOCK_MAX_CHARS = 1200
-
 # 网页正文里的"不可见空格"：HTML &nbsp; 会被 innerText 解码成 U+00A0，
 # 编辑器常显形成 · 或高亮、复制粘贴也容易乱。只折叠空格类字符，
 # 不用 unicodedata.normalize("NFKC")——那会把全角字母/上标数字一并改掉，误伤正文。
@@ -90,20 +91,6 @@ _INVISIBLE_TRANS = {**_INVISIBLE_SPACE_MAP, **_INVISIBLE_ZERO_WIDTH}
 def _normalize_text(text: str) -> str:
     """把正文里不可见空格归一成普通空格、零宽字符删除；其余原样保留。"""
     return (text or "").translate(_INVISIBLE_TRANS)
-
-
-def _detect_block(title: str, text: str) -> str | None:
-    """返回命中的拦截特征；正文超过阈值视为正常文章，不做匹配。"""
-    body = (text or "").strip()
-    if len(body) > _BLOCK_MAX_CHARS:
-        return None
-    # 大小写不敏感：Cloudflare 页面实际写 "Checking your browser"，
-    # 特征表里存的是小写，不归一就会漏。
-    hay = (body + "\n" + (title or "")).lower()
-    for sig in _BLOCK_SIGNALS:
-        if sig.lower() in hay:
-            return sig
-    return None
 
 
 _EXTRACT_JS = """() => {
@@ -256,11 +243,9 @@ def _reset_pw() -> None:
                 pass
     cdp_browser = _CDP.get("browser")
     _CDP["browser"] = None
+    _CDP["page"] = None            # 常驻页随 driver 一起作废
     if cdp_browser is not None:
-        try:
-            (getattr(cdp_browser, "disconnect", None) or (lambda: None))()
-        except Exception:
-            pass
+        _disconnect_cdp(cdp_browser)
     pw = _DRIVER.get("pw")
     _DRIVER["pw"] = None
     if pw is not None:
@@ -287,31 +272,114 @@ def _is_stale(e: BaseException) -> bool:
     return any(sig in msg for sig in _STALE_SIGNALS)
 
 
-def _cdp_page():
-    """连到 CDP 浏览器开新页；端点没起就由 agent 自动启动（无需人工执行命令）。
+def _disconnect_cdp(browser) -> None:
+    """断开 CDP 连接但绝不关用户窗口。
 
-    **只能在 worker 线程里调**（返回的 page 不能带出去）。
+    Playwright Python 的 Browser 没有 disconnect()：实测 `hasattr(b,'disconnect')`
+    为 False，close() 又会真的终止用户进程。唯一安全的释放方式是通过
+    `_reset_pw()` 停掉整个 driver（连接随之断开）。这里只对确实存在的
+    disconnect 做兼容调用，其余情况什么都不做，交给 driver 层回收。
+    """
+    fn = getattr(browser, "disconnect", None)
+    if callable(fn):
+        try:
+            fn()
+        except Exception:
+            pass
+
+
+def _pick_cdp_context(browser):
+    """从已连接的 CDP 浏览器里挑一个可开新页的 context。
+
+    实测坑：CDP 端点 `/json/version` 返回 200（ agent 认为浏览器已就绪），但
+    `browser.contexts` 可能仍为空 —— 用户关掉最后一个窗口只剩后台进程、或
+    刚启动 target 还没注册，此时 0.03s 就抛"没有任何上下文"，页面根本没打开。
+    策略：轮询等 target 注册 → 仍空则 new_context() 兜底（CDP 连接的浏览器
+    允许新建独立 context，不会碰用户已有窗口/登录态）。
+    """
+    contexts = list(browser.contexts or [])
+    if not contexts:
+        for _ in range(_CDP_CTX_WAIT_TRIES):
+            time.sleep(_CDP_CTX_WAIT_INTERVAL)
+            contexts = list(browser.contexts or [])
+            if contexts:
+                break
+    if not contexts:
+        # 浏览器活着但一个 context 都没有：新建独立 context 兜底。
+        # new_context 在 CDP 连接下创建的是隔离会话，不动用户默认 context。
+        contexts = [browser.new_context()]
+    return contexts[0]
+
+
+def _cdp_browser():
+    """返回可用的 CDP browser 连接；端点没起就自动启动（无需人工执行命令）。
+
+    连接失效 / 端点变化时重建。is_connected() 偶有假阳性（实测关页后进程已退
+    它仍返回 True），所以拿 context 时由 _pick_cdp_context 再兜底。
+    **只能在 worker 线程里调。**
     """
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, CDP_ENDPOINT_DEFAULT).strip()
     _auto_start_cdp_browser(endpoint)
     pw = _driver()
-    if _CDP["browser"] is None:
-        _CDP["browser"] = pw.chromium.connect_over_cdp(endpoint)
-        _CDP["endpoint"] = endpoint
-    elif _CDP["endpoint"] != endpoint:
-        # 端点变了就重连。注意：绝不对用户浏览器调 close()（部分 Playwright
-        # 版本会真的终止进程），有 disconnect 就只用 disconnect。
+    if (not _cdp_browser_alive(_CDP["browser"])
+            or _CDP["endpoint"] != endpoint):
         old = _CDP["browser"]
         _CDP["browser"] = pw.chromium.connect_over_cdp(endpoint)
         _CDP["endpoint"] = endpoint
+        _CDP["page"] = None          # 换了连接，旧常驻页作废
+        _disconnect_cdp(old)
+    return _CDP["browser"]
+
+
+def _cdp_page():
+    """连到 CDP 浏览器**新开一页**（用完由调用方关）。
+
+    **只能在 worker 线程里调**（返回的 page 不能带出去）。
+    """
+    return _pick_cdp_context(_cdp_browser()).new_page()
+
+
+def _cdp_sticky_page():
+    """返回 CDP 浏览器的**常驻页**：复用同一页 navigate，读完不关。
+
+    identity=user 的语义是"接管会话、停在当前页给人看/扫码"，所以目标页必须
+    留在浏览器里。若每次 new_page + close，用户只会看到页面一闪而过、最后
+    剩 agent 启动时自带的 about:blank（实测）。常驻页解决了这个"跳过去又
+    退出来"的问题，也避免反复调用累积标签页。
+    **只能在 worker 线程里调**（page 不能带出 worker）。
+    """
+    page = _CDP.get("page")
+    if page is not None:
         try:
-            (getattr(old, "disconnect", None) or (lambda: None))()
+            if not page.is_closed():
+                _bring_to_front(page)
+                return page
         except Exception:
             pass
-    contexts = _CDP["browser"].contexts
-    if not contexts:
-        raise RuntimeError("已连接但浏览器没有任何上下文")
-    return contexts[0].new_page()
+        _CDP["page"] = None
+    ctx = _pick_cdp_context(_cdp_browser())
+    # 优先复用浏览器里已有的 about:blank（agent 启动时的占位页），而不是
+    # 再 new_page —— 否则用户会看到"目标页 + 一个空标签页"两个页。
+    for existing in ctx.pages:
+        try:
+            if (not existing.is_closed()
+                    and existing.url in ("about:blank", "")):
+                _CDP["page"] = existing
+                _bring_to_front(existing)
+                return existing
+        except Exception:
+            continue
+    _CDP["page"] = ctx.new_page()
+    _bring_to_front(_CDP["page"])
+    return _CDP["page"]
+
+
+def _bring_to_front(page) -> None:
+    """把 CDP 页所在窗口提到前面，方便用户看到登录/扫码页。失败不影响读取。"""
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
 
 
 def _launch():
@@ -343,21 +411,32 @@ def _new_page():
         user_agent=USER_AGENT, viewport={"width": 1280, "height": 900})
 
 
-def run_with_page(fn, *, via_cdp: bool = False, timeout: float = 180.0):
-    """在 worker 线程里新开一页交给 fn(page)，用完自动关页，返回值原样带回。
+def run_with_page(fn, *, via_cdp: bool = False, timeout: float = 180.0,
+                  keep_page: bool = False):
+    """在 worker 线程里开一页交给 fn(page)，返回值原样带回。
 
-    这是给 web_search / web_screenshot 用的便捷入口：**page 绝不能逃出 fn**。
-    拿 page 到别的线程再操作会抛 `Cannot switch to a different thread`。
+    默认用完关页（guest 的 web_search / web_screenshot 走这条，防泄漏）。
+    keep_page=True 时保留页面不关——给 identity=user 的常驻页用，页面要停在
+    目标 URL 给人看/扫码。**page 绝不能逃出 fn**：拿到别的线程操作会抛
+    `Cannot switch to a different thread`。
     """
     def job():
-        page = _cdp_page() if via_cdp else _new_page()
+        # keep_page + via_cdp = 常驻页复用（identity=user，页面要停在目标 URL）；
+        # 其余走一次性新页。三条路径都在 worker 里开页，page 不带出 fn。
+        if keep_page and via_cdp:
+            page = _cdp_sticky_page()
+        elif via_cdp:
+            page = _cdp_page()
+        else:
+            page = _new_page()
         try:
             return fn(page)
         finally:
-            try:
-                page.close()
-            except Exception:
-                pass
+            if not keep_page:
+                try:
+                    page.close()
+                except Exception:
+                    pass
 
     try:
         return run_on_pw(job, timeout=timeout)
@@ -387,17 +466,22 @@ def _fetch(url: str, *, via_cdp: bool) -> tuple[str, str]:
         page.wait_for_timeout(500)  # 等首屏 JS
         return _read_page(page)
 
-    return run_with_page(job, via_cdp=via_cdp)
+    # user/CDP：keep_page=True 复用常驻页并保留，页面停在目标 URL（见
+    # _cdp_sticky_page）；guest：一次性新页读完即关。两者都保留 _stale 重建重试。
+    return run_with_page(job, via_cdp=via_cdp, keep_page=via_cdp)
 
 
 @tool(
     name="browse_url",
     description=(
-        "用 Playwright 打开网页并提取正文文本。读文档、文章、链接内容用这个。"
-        "默认 identity=auto：先用无登录浏览器，遇到反爬/登录墙时由 agent 自动启动"
-        "带调试端口的浏览器并接管会话重试，无需用户执行任何命令；只有扫码登录需本人操作，"
-        "且窗口由 agent 自动开好。guest=只用无登录浏览器；user=直接用浏览器会话。"
-        "只陈述本轮实际读到的正文，被拦截就明说，不编造内容。"
+        "用 Playwright 打开网页并读取正文文本，原样返回标题+URL+正文。读文档、文章、"
+        "链接内容用这个。工具只负责读，原样交回内容，不判断读回来的东西是不是你要的。"
+        "你自己看正文：若读到的内容与预期不符——可能是登录页、人机验证、需要点确认/"
+        "同意、验证码、欢迎页等任何需人工操作的拦截——就把读到的情况说给用户，请对方"
+        "在弹出的浏览器窗口里完成相应操作；用户弄好后用 identity=user 再读一次即可。"
+        "identity: guest=无登录匿名浏览器；user=用已打开的浏览器会话（登录态/操作态都"
+        "复用，页面停在目标页，便于人工操作）；auto(默认)=先 guest，读取抛错再用 user。"
+        "不编造内容——读到的就是原样正文。"
     ),
     parameters={
         "type": "object",
@@ -405,7 +489,7 @@ def _fetch(url: str, *, via_cdp: bool) -> tuple[str, str]:
             "url": {"type": "string", "description": "http/https 链接"},
             "max_chars": {"type": "integer", "description": "正文最多返回字符数；不传则不在此截断，超长由 spill 整文落盘"},
             "identity": {"type": "string", "enum": ["auto", "guest", "user"],
-                         "description": "auto=自动(默认，遇反爬自动起浏览器会话);guest=仅无登录浏览器;user=直接用浏览器会话"},
+                         "description": "guest=无登录浏览器;user=用已登录浏览器会话;auto=先guest失败再user"},
         },
         "required": ["url"],
     },
@@ -413,55 +497,42 @@ def _fetch(url: str, *, via_cdp: bool) -> tuple[str, str]:
 )
 def browse_url(ctx: ToolContext, url: str, max_chars: int | None = None,
                identity: str = "auto") -> ToolResult:
+    """打开网页、读正文、原样返回。不做任何"这是什么类型的障碍"的判断 —— 登录页、
+    人机验证、需点击确认等任何异常内容都原样交回，由读结果的模型自己看内容判断。
+    identity 只决定用哪个浏览器读（机械策略）：guest=匿名 headless；user=已打开的
+    浏览器会话（CDP 常驻页，复用登录态/操作态）；auto=先 guest，技术上读失败再退到
+    user。读到异常内容不算"失败"，会原样返回，由模型决定下一步。
+    """
     if not re.match(r"^https?://", url or ""):
         return ToolResult("[错误] 只支持 http/https 链接")
     if identity not in ("auto", "guest", "user"):
         return ToolResult(f"[错误] identity 只能是 auto/guest/user，收到: {identity}")
 
-    # auto（默认）：先用 guest 无登录浏览器；被拦截则由 agent 自动启动带 CDP 的
-    # 浏览器并接管会话重试——全程不需要人执行任何命令。只有扫码登录是人做的。
-    use_cdp = identity == "user"
-    last_hit = ""
-    last_text = ""
-    last_title = ""
-    for attempt in ("guest", "cdp") if identity == "auto" else ((identity,)):
-        via_cdp = attempt == "cdp" or identity == "user"
+    # 机械策略：auto 先 guest，读抛异常再退 user。不判断内容语义（登录/拦截与否
+    # 一律原样返回），只读失败（异常）才换浏览器。
+    attempts = ("guest", "user") if identity == "auto" else (identity,)
+    last_err = ""
+    for which in attempts:
+        via_cdp = which == "user"
         try:
             title, text = _fetch(url, via_cdp=via_cdp)
         except RuntimeError as e:
-            # 自动启动/连接失败：guest 失败直接报；cdp 失败说明自动接管没成功
+            last_err = f"agent 自动启动浏览器会话失败: {e}"
             if via_cdp:
                 return ToolResult(
-                    f"[错误] agent 自动启动浏览器会话失败: {e}\n"
-                    f"（可用环境变量 {CDP_PROFILE_ENV} 指定 profile，"
+                    f"[错误] {last_err}\n（可用环境变量 {CDP_PROFILE_ENV} 指定 profile，"
                     f"{CDP_ENDPOINT_ENV} 指定端点）")
-            return ToolResult(f"[错误] {e}")
+            continue          # guest 读失败，auto 退到 user 再试
         except Exception as e:
-            return ToolResult(f"[错误] 打开失败 {url}: {type(e).__name__}: {str(e)[:300]}")
-
+            last_err = f"打开失败 {url}: {type(e).__name__}: {str(e)[:300]}"
+            if via_cdp:
+                return ToolResult(f"[错误] {last_err}")
+            continue
         text = re.sub(r"\n{3,}", "\n\n", _normalize_text(text or "")).strip()
-        hit = _detect_block(title, text)
-        if not hit:
-            return ToolResult(
-                f"[网页] {url}\n[标题] {title}\n[identity] {attempt}\n\n{_clip(text, max_chars)}")
+        return ToolResult(
+            f"[网页] {url}\n[标题] {title}\n[identity] {which}\n\n{_clip(text, max_chars)}")
 
-        last_hit, last_text, last_title = hit, text, title
-        if via_cdp:
-            # 自动启动的浏览器仍被拦 = 该站未登录。窗口 agent 已开好并停在目标页，
-            # 人工只需扫码/登录（唯一 human-only 步骤），无需执行任何命令。
-            return ToolResult(
-                f"[需要登录] agent 已自动打开浏览器并访问目标站，但会话未登录，"
-                f"被拦截（{hit}）。\n"
-                "请在刚弹出的浏览器窗口里完成登录（扫码或账号均可）；"
-                "登录一次后会持久化，之后无需再登。登录完告诉我，我重新读取。\n"
-                "这是唯一需要你本人操作的步骤（人工验证），无需执行任何命令。\n"
-                f"[已验证片段]\n{text[:300]}")
-
-    # auto 流程 guest 被拦但 cdp 分支未执行到（理论上不会），诚实报卡点
-    return ToolResult(
-        f"[已拦截] {url}\n[标题] {last_title}\n[拦截特征] {last_hit}\n"
-        f"本轮只观察到反爬响应（{len(last_text)} 字符），不编造正文。"
-        f"\n[已验证片段]\n{last_text[:300]}")
+    return ToolResult(f"[错误] {last_err or '未能读取页面'}")
 
 
 def _clip(text: str, max_chars: int | None) -> str:
