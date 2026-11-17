@@ -11,7 +11,8 @@ import time
 from agent.backends import ChatClient
 from agent import longdoc
 from agent.config import (SYSTEM_PROMPT_ASK_RULE, SYSTEM_PROMPT_BROWSE_RULE,
-                         SYSTEM_PROMPT_CORE, SYSTEM_PROMPT_FILE_RULE, AgentConfig)
+                         SYSTEM_PROMPT_CORE, SYSTEM_PROMPT_DB_RULE,
+                         SYSTEM_PROMPT_FILE_RULE, AgentConfig)
 from agent import context_view
 from agent import compaction
 from agent.events import ConsoleEmitter
@@ -205,6 +206,10 @@ def new_history(workspace: str | None = None, cfg=None) -> list:
     # 而不是一句「请登录」就结束（实测 qwen 会这样偷懒，且 guest 无头无从操作）。
     if toolpolicy.is_allowed(cfg, "browse_url"):
         prompt += SYSTEM_PROMPT_BROWSE_RULE
+    # 查数据库时引导它加载项目自带的查询技能，而不是自己拼 mysql / pymysql：
+    # 没有 skill 工具就没有加载路径，这条只会让它空转，所以按 skill 工具是否可用决定。
+    if toolpolicy.skill_tool_on(cfg):
+        prompt += SYSTEM_PROMPT_DB_RULE
     if workspace:
         prompt += f"\n当前工作空间目录: {workspace}"
     prompt += _policy_hint(cfg)

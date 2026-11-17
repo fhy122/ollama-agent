@@ -120,7 +120,7 @@ def skill_index(workspace: str | None, disabled=()) -> str:
     lines = ["可用技能（任务命中技能主题时，先调用 skill(name=\"...\") 加载指令全文再执行）："]
     for name, it in sorted(items.items()):
         d = re.sub(r"\s+", " ", it["desc"])
-        lines.append(f"- {name}: {d[:60]}{'…' if len(d) > 60 else ''}")
+        lines.append(f"- {name}: {d[:100]}{'…' if len(d) > 100 else ''}")
     return "\n".join(lines)
 
 
