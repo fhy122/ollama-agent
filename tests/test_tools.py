@@ -335,6 +335,56 @@ def main() -> None:
         assert "错误" in r.text and "http" in r.text, r.text
         print("PASS: web_screenshot（HTML→PNG、全页长图、二选一/空参/协议校验）")
 
+        # ---- browse_url：拦截检测 + identity 参数（纯逻辑，不联网）----
+        from tools.browse_url import _detect_block, _read_page
+        # 知乎 40362：HTTP 200 里的错误 JSON，短正文必须识别为拦截
+        zhihu_block = ('{"error":{"message":"您当前请求存在异常，暂时限制本次访问。",'
+                       '"code":40362}}')
+        assert _detect_block("", zhihu_block) == "40362", "应识别知乎 40362 风控 JSON"
+        assert _detect_block("", "访问受限，请稍后再试") == "访问受限", "应识别通用拦截文案"
+        assert _detect_block("Just a moment...", "Checking your browser") is not None, \
+            "应识别 Cloudflare 验证页"
+        # 长文里恰好提到这些词不能被误伤（正文超阈值直接放行）
+        long_article = "正文" * 700 + "40362"
+        assert _detect_block("正常文章", long_article) is None, "长文不应被误判为拦截"
+        # 正常短正文也要放行
+        assert _detect_block("标题", "这是一篇正常的短文。") is None
+        # schema 暴露 identity 参数
+        bspec = next(s for s in specs if s["function"]["name"] == "browse_url")
+        props = bspec["function"]["parameters"]["properties"]
+        assert "identity" in props and set(props["identity"]["enum"]) == {"guest", "user"}
+        # 非法 identity 在联网前就被拒（不发浏览器请求）
+        ctx_b = ToolContext(workspace=ws)
+        r = dispatch("browse_url", {"url": "https://example.com", "identity": "root"}, ctx_b)
+        assert "错误" in r.text and "guest" in r.text, r.text
+        # _read_page：JS 导航销毁执行上下文要重试，不把一次性异常当失败
+        class _FlakyPage:
+            def __init__(self):
+                self.n = 0
+                self.slept = 0
+            def wait_for_timeout(self, ms):
+                self.slept += ms
+            def title(self):
+                return "T"
+            def evaluate(self, js):
+                self.n += 1
+                if self.n == 1:
+                    raise RuntimeError("Execution context was destroyed, most likely because of a navigation")
+                return "正文"
+        fp = _FlakyPage()
+        assert _read_page(fp) == ("T", "正文") and fp.n == 2 and fp.slept > 0, \
+            "应在导航销毁后重试成功"
+        class _HardFailPage(_FlakyPage):
+            def evaluate(self, js):
+                self.n += 1
+                raise RuntimeError("SyntaxError: bad js")
+        try:
+            _read_page(_HardFailPage())
+            assert False, "非导航类异常应立即抛出，不该重试"
+        except RuntimeError as e:
+            assert "bad js" in str(e), e
+        print("PASS: browse_url 拦截检测 + identity 参数 + _read_page 导航重试")
+
         # ---- delete_file：删文件 / 空目录 / 非空目录保护 / recursive ----
         del_f = ws / "todel.txt"
         del_f.write_text("垃圾", encoding="utf-8")
@@ -699,10 +749,12 @@ def main() -> None:
         assert s.apply("enter") == "continue" and s.picked == ["README.md"], s.picked
         assert _st("/").apply("enter") == "send"
 
-        # / 前缀 → 命中指令排第一，Enter 直接回填 "/reset "
+        # / 前缀 → 按 COMMANDS 定义顺序命中，Enter 回填首个候选。
+        # /re 同时命中 repeat 与 reset（repeat 命令后加，定义顺序在前）。
         s = _st("/re")
-        assert s.items[0].label == "/reset"
-        assert s.apply("enter") == "continue" and s.buf == "/reset ", repr(s.buf)
+        cmd_labels = [i.label for i in s.items if i.kind == "cmd"]
+        assert cmd_labels == ["/repeat", "/reset"], cmd_labels
+        assert s.apply("enter") == "continue" and s.buf == "/repeat ", repr(s.buf)
 
         # 全名 + Enter → 直接发送（不追加空格）
         s = _st("/reset")
@@ -723,9 +775,10 @@ def main() -> None:
         sks = [i for i in s.items if i.kind != "cmd"]
         assert sks[0].payload == "dev-expert" and sks[0].kind == "skill" and len(sks) == 2
         assert "编程专家" in sks[0].hint                        # hint 显示描述而非显示名
-        # /re 选中第一条仍是命中指令（未命中技能在后面的组里，不抢占）
+        # /re 第一条仍是命中指令（未命中技能在后面的组里，不抢占）
         s = _st("/re")
-        assert s.items[0].label == "/reset" and s.items[0].kind == "cmd"
+        assert s.items[0].kind == "cmd" and s.items[0].label in ("/repeat", "/reset"), \
+            s.items[0].label
 
         # Esc 关闭 → 回车原样发送；回删恢复面板；控制字符忽略；邮箱不触发
         s = _st("@rep")
