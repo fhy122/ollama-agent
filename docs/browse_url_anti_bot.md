@@ -27,6 +27,10 @@
 4. **`_read_page()` 导航重试**：实测知乎在首屏 500ms 时 JS 导航未稳，`page.evaluate`
    抛 `Execution context was destroyed`（旧代码在这里直接报"打开失败"，拦截检测
    根本没机会跑）。改为遇导航类异常等 1s 重试、最多 3 次；非导航类异常立即抛出。
+5. **`_normalize_text()` 不可见空格归一化**：网页 HTML 的 `&nbsp;` 经 `innerText`
+   解码成 U+00A0（实测 CSDN 那篇 spill 有 89 个），编辑器显形成 `·`、复制粘贴易乱。
+   把 16 种 Unicode 空格类字符折叠成普通空格、ZWSP/BOM 直接删；**不用 NFKC**
+   （那会把全角字母/上标数字一并改掉，误伤正文）。实测真实页面残留为零。
 
 ## 验证判据（沙箱恢复后执行）
 
@@ -42,9 +46,10 @@ python -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8')) for p i
 python tests/test_tools.py
 ```
 
-期望：出现 `PASS: browse_url 拦截检测 ... _read_page 导航重试`，末行 PASS，退出码 0。
+期望：出现 `PASS: browse_url 拦截检测 ... _read_page 导航重试 + 不可见空格归一化`，末行 PASS，退出码 0。
 覆盖：40362 JSON、通用拦截、Cloudflare、长文不误伤、正常短文放行、schema 含 identity、
-非法值被拒、`_read_page` 导航销毁重试 + 非导航异常不重试。**实测退出码 0。**
+非法值被拒、`_read_page` 导航销毁重试 + 非导航异常不重试、不可见空格归一化（含"不用 NFKC
+误伤上标/全角"的反例断言）。**实测退出码 0。**
 
 ### 第 4 档 · 端到端（guest 路径已实测，2026-11-17）
 

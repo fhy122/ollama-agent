@@ -336,7 +336,7 @@ def main() -> None:
         print("PASS: web_screenshot（HTML→PNG、全页长图、二选一/空参/协议校验）")
 
         # ---- browse_url：拦截检测 + identity 参数（纯逻辑，不联网）----
-        from tools.browse_url import _detect_block, _read_page
+        from tools.browse_url import _detect_block, _read_page, _normalize_text
         # 知乎 40362：HTTP 200 里的错误 JSON，短正文必须识别为拦截
         zhihu_block = ('{"error":{"message":"您当前请求存在异常，暂时限制本次访问。",'
                        '"code":40362}}')
@@ -383,7 +383,14 @@ def main() -> None:
             assert False, "非导航类异常应立即抛出，不该重试"
         except RuntimeError as e:
             assert "bad js" in str(e), e
-        print("PASS: browse_url 拦截检测 + identity 参数 + _read_page 导航重试")
+        # 不可见空格归一化：&nbsp;(U+00A0)/全角空格/EM SPACE → 普通空格；
+        # 零宽空格 ZWSP/BOM 直接删；正常正文（含换行、中文）不受影响。
+        raw = "一\xa0RNN\u3000概述\u2003Xt\u200b−1\n下一行"
+        norm = _normalize_text(raw)
+        assert norm == "一 RNN 概述 Xt−1\n下一行", repr(norm)
+        # 关键：不能用 NFKC 一把梭——上标 ¹、全角 A 必须原样保留
+        assert _normalize_text("x¹＋Ａ") == "x¹＋Ａ", "只动空格，不动别的字符"
+        print("PASS: browse_url 拦截检测 + identity 参数 + _read_page 导航重试 + 不可见空格归一化")
 
         # ---- delete_file：删文件 / 空目录 / 非空目录保护 / recursive ----
         del_f = ws / "todel.txt"

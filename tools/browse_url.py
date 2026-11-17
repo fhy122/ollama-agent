@@ -35,6 +35,20 @@ _BLOCK_SIGNALS = (
 )
 _BLOCK_MAX_CHARS = 1200
 
+# 网页正文里的"不可见空格"：HTML &nbsp; 会被 innerText 解码成 U+00A0，
+# 编辑器常显形成 · 或高亮、复制粘贴也容易乱。只折叠空格类字符，
+# 不用 unicodedata.normalize("NFKC")——那会把全角字母/上标数字一并改掉，误伤正文。
+_INVISIBLE_SPACE_MAP = dict.fromkeys(
+    (0x00A0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
+     0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x202F, 0x205F, 0x3000), " ")
+_INVISIBLE_ZERO_WIDTH = dict.fromkeys((0x200B, 0xFEFF), None)  # 零宽：直接删
+_INVISIBLE_TRANS = {**_INVISIBLE_SPACE_MAP, **_INVISIBLE_ZERO_WIDTH}
+
+
+def _normalize_text(text: str) -> str:
+    """把正文里不可见空格归一成普通空格、零宽字符删除；其余原样保留。"""
+    return (text or "").translate(_INVISIBLE_TRANS)
+
 
 def _detect_block(title: str, text: str) -> str | None:
     """返回命中的拦截特征；正文超过阈值视为正常文章，不做匹配。"""
@@ -221,7 +235,7 @@ def browse_url(ctx: ToolContext, url: str, max_chars: int | None = None,
         except Exception:
             pass
 
-    text = re.sub(r"\n{3,}", "\n\n", text or "").strip()
+    text = re.sub(r"\n{3,}", "\n\n", _normalize_text(text or "")).strip()
     hit = _detect_block(title, text)
     if hit:
         # 卡住就报卡在哪 —— 绝不把风控 JSON 当正文交出去（对应纪律 1/2/3/5）
